@@ -1,0 +1,83 @@
+# ---- Gerais / SO ----
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+*.swo
+*.orig
+
+# ---- Variáveis de ambiente ----
+.env
+.env.*
+*.env
+
+# ---- IDEs / Editores ----
+.idea/
+*.iml
+.vscode/
+.fleet/
+
+# ---- Dart / Flutter ----
+.dart_tool/
+.packages
+.pub/
+.pub-cache/
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+
+# Relatórios/artefatos
+coverage/
+build/
+
+# ---- Android ----
+android/.gradle/
+android/**/.cxx/
+android/**/captures/
+android/**/build/
+android/**/generated/
+android/local.properties
+android/app/debug.keystore
+android/app/key.properties
+*.keystore
+*.jks
+
+# Arquivos gerados pelo Flutter/Gradle
+android/**/GeneratedPluginRegistrant.*
+
+# ---- iOS ----
+ios/Pods/
+ios/.symlinks/
+ios/.generated/
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+ios/Flutter/ephemeral/
+ios/Runner/GeneratedPluginRegistrant.*
+
+# ---- macOS ----
+macos/Pods/
+macos/.symlinks/
+macos/Flutter/Generated.xcconfig
+macos/Flutter/flutter_export_environment.sh
+macos/Flutter/ephemeral/
+macos/Runner/GeneratedPluginRegistrant.*
+
+# ---- Linux ----
+linux/flutter/ephemeral/
+
+# ---- Windows ----
+windows/flutter/ephemeral/
+
+# ---- Web ----
+# (normalmente nada além de artefatos de build, já coberto em /build)
+
+# ---- Outros opcionais comuns ----
+.fvm/
+.tool-versions
+.DS_Store?
+*.bak
+*.backup
+
+
