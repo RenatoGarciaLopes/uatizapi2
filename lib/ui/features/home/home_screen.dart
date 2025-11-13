@@ -1,7 +1,9 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:zapizapi/services/attachment_service.dart';
+import 'package:zapizapi/ui/widgets/image_viewer.dart';
 import 'package:zapizapi/repositories/profile_repository_implementation.dart';
 import 'package:zapizapi/repositories/room_repository_implementation.dart';
 import 'package:zapizapi/services/profile_service.dart';
@@ -24,12 +26,11 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _textController = TextEditingController();
   String? _selectedRoomId;
   SidebarRoomData? _selectedRoomData;
-  bool _enterHintVisible = false;
-  Timer? _enterHintTimer;
   late final AnimationController _introController;
   late final Animation<Offset> _slideIn;
   late final Animation<double> _fadeIn;
@@ -41,13 +42,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       vsync: this,
       duration: const Duration(milliseconds: 550),
     );
-    _slideIn = Tween<Offset>(
-      begin: const Offset(0, 0.02),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _introController,
-      curve: Curves.easeOutCubic,
-    ));
+    _slideIn =
+        Tween<Offset>(
+          begin: const Offset(0, 0.02),
+          end: Offset.zero,
+        ).animate(
+          CurvedAnimation(
+            parent: _introController,
+            curve: Curves.easeOutCubic,
+          ),
+        );
     _fadeIn = CurvedAnimation(
       parent: _introController,
       curve: Curves.easeOutCubic,
@@ -57,7 +61,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   @override
   void dispose() {
-    _enterHintTimer?.cancel();
     _introController.dispose();
     super.dispose();
   }
@@ -70,8 +73,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final headerBackground = isDarkMode
         ? colorScheme.surfaceContainerHigh
         : colorScheme.primary;
-    final headerForeground =
-        isDarkMode ? colorScheme.onSurface : Colors.white;
+    final headerForeground = isDarkMode ? colorScheme.onSurface : Colors.white;
     const sidebarWidth = 300.0;
 
     return Scaffold(
@@ -87,7 +89,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 Column(
                   children: [
                     Container(
-                      height: kToolbarHeight + MediaQuery.of(context).padding.top,
+                      height:
+                          kToolbarHeight + MediaQuery.of(context).padding.top,
                       padding: EdgeInsets.only(
                         top: MediaQuery.of(context).padding.top,
                         left: sidebarWidth + 32,
@@ -112,16 +115,23 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               headerForeground,
                             ),
                           ),
-                          Icon(Icons.light_mode,
-                              size: 18, color: headerForeground),
+                          Icon(
+                            Icons.light_mode,
+                            size: 18,
+                            color: headerForeground,
+                          ),
                           Switch.adaptive(
                             value: colorScheme.brightness == Brightness.dark,
                             onChanged: (_) => themeController.toggle(),
-                            activeColor:
-                                isDarkMode ? colorScheme.primary : Colors.white,
+                            activeColor: isDarkMode
+                                ? colorScheme.primary
+                                : Colors.white,
                           ),
-                          Icon(Icons.dark_mode,
-                              size: 18, color: headerForeground),
+                          Icon(
+                            Icons.dark_mode,
+                            size: 18,
+                            color: headerForeground,
+                          ),
                           const SizedBox(width: 8),
                           IconButton(
                             tooltip: 'Sair',
@@ -139,7 +149,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     ),
                     Expanded(
                       child: Padding(
-                        padding: const EdgeInsets.only(
+                        padding: EdgeInsets.only(
                           left: sidebarWidth + 32,
                           right: 24,
                           top: 24,
@@ -158,13 +168,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     ),
                   ],
                 ),
-                if (_enterHintVisible)
-                  Positioned(
-                    top: kToolbarHeight + MediaQuery.of(context).padding.top + 8,
-                    left: sidebarWidth + 32,
-                    right: 24,
-                    child: _buildEnterHintBanner(Theme.of(context).colorScheme),
-                  ),
                 Positioned(
                   top: 0,
                   left: 0,
@@ -175,6 +178,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       padding: EdgeInsets.only(
                         top: MediaQuery.of(context).padding.top,
                         left: 16,
+                        right: 0,
                         bottom: 24,
                       ),
                       child: OpenConversationsSidebar(
@@ -185,7 +189,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             _selectedRoomId = room.id;
                             _selectedRoomData = room;
                           });
-                          _triggerEnterHint();
                         },
                       ),
                     ),
@@ -279,55 +282,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
   }
 
-  void _triggerEnterHint() {
-    _enterHintTimer?.cancel();
-    setState(() {
-      _enterHintVisible = true;
-    });
-    _enterHintTimer = Timer(const Duration(seconds: 3), () {
-      if (!mounted) return;
-      setState(() {
-        _enterHintVisible = false;
-      });
-    });
-  }
-
-  Widget _buildEnterHintBanner(ColorScheme scheme) {
-    final isDark = scheme.brightness == Brightness.dark;
-    final background =
-        isDark ? scheme.surfaceContainerHigh : scheme.surfaceContainer;
-    final foreground = isDark ? scheme.onSurface : scheme.onSurface;
-
-    return AnimatedOpacity(
-      opacity: _enterHintVisible ? 1 : 0,
-      duration: const Duration(milliseconds: 250),
-      child: Material(
-        color: background,
-        elevation: isDark ? 0 : 1,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          child: Row(
-            children: [
-              Icon(Icons.info_outline, size: 18, color: scheme.onSurfaceVariant),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Clique para mais informações',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: foreground,
-                        fontWeight: FontWeight.w500,
-                      ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
   Future<void> _showNewConversationDialog() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -447,8 +401,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     if (email.isEmpty) {
                       return 'Informe um e-mail.';
                     }
-                    final emailRegex =
-                        RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+                    final emailRegex = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
                     if (!emailRegex.hasMatch(email)) {
                       return 'Informe um e-mail válido.';
                     }
@@ -548,8 +501,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 final memberIds = <String>{currentUser.id};
 
                 for (final email in emails) {
-                  final userId =
-                      await profileRepository.getUserIdByEmail(email);
+                  final userId = await profileRepository.getUserIdByEmail(
+                    email,
+                  );
                   memberIds.add(userId);
                 }
 
@@ -617,7 +571,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         maxLines: 4,
                         decoration: const InputDecoration(
                           labelText: 'Participantes',
-                          hintText: 'Digite e-mails separados por vírgula ou quebra de linha',
+                          hintText:
+                              'Digite e-mails separados por vírgula ou quebra de linha',
                         ),
                         validator: (value) {
                           final emails = value ?? '';
@@ -637,7 +592,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                   isSearchable = value;
                                 });
                               },
-                        title: const Text('Permitir que o grupo seja pesquisável'),
+                        title: const Text(
+                          'Permitir que o grupo seja pesquisável',
+                        ),
                         subtitle: const Text(
                           'Outros usuários poderão encontrar este grupo ao buscar pelo nome.',
                         ),
@@ -800,8 +757,9 @@ class _ChatComponentState extends State<ChatComponent> {
               return Padding(
                 padding: const EdgeInsets.symmetric(vertical: 4),
                 child: Align(
-                  alignment:
-                      isMine ? Alignment.centerRight : Alignment.centerLeft,
+                  alignment: isMine
+                      ? Alignment.centerRight
+                      : Alignment.centerLeft,
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 260),
                     child: DecoratedBox(
@@ -826,15 +784,48 @@ class _ChatComponentState extends State<ChatComponent> {
                             if (!isMine)
                               Text(
                                 author,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .labelMedium
+                                style: Theme.of(context).textTheme.labelMedium
                                     ?.copyWith(fontWeight: FontWeight.w600),
                               ),
-                            Text(
-                              content,
-                              style: Theme.of(context).textTheme.bodyMedium,
-                            ),
+                            if (_isImageUrl(content))
+                              _MessageImage(
+                                url: content,
+                                onTap: () => _openImageViewer(context, content),
+                              )
+                            else if (_isUrl(content))
+                              InkWell(
+                                onTap: () => _openUrl(content),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    const Icon(
+                                      Icons.attach_file,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Flexible(
+                                      child: Text(
+                                        _fileNameFromUrl(content),
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                              decoration:
+                                                  TextDecoration.underline,
+                                            ),
+                                        overflow: TextOverflow.ellipsis,
+                                        maxLines: 2,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              )
+                            else
+                              Text(
+                                content,
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
                           ],
                         ),
                       ),
@@ -848,6 +839,90 @@ class _ChatComponentState extends State<ChatComponent> {
       ),
     );
   }
+}
+
+class _MessageImage extends StatelessWidget {
+  const _MessageImage({required this.url, required this.onTap});
+
+  final String url;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Hero(
+        tag: url,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.network(
+            url,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Text(
+              'Falha ao carregar imagem',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+bool _isUrl(String value) {
+  final uri = Uri.tryParse(value);
+  if (uri == null) return false;
+  return uri.hasScheme &&
+      (uri.scheme == 'http' || uri.scheme == 'https') &&
+      uri.host.isNotEmpty;
+}
+
+bool _isImageUrl(String value) {
+  if (!_isUrl(value)) return false;
+  final lower = value.toLowerCase();
+  return lower.endsWith('.png') ||
+      lower.endsWith('.jpg') ||
+      lower.endsWith('.jpeg') ||
+      lower.endsWith('.webp') ||
+      lower.endsWith('.gif') ||
+      lower.contains('image=');
+}
+
+String _fileNameFromUrl(String url) {
+  try {
+    final uri = Uri.parse(url);
+    final path = uri.path;
+    if (path.isEmpty) return url;
+    final segments = path.split('/');
+    return segments.isNotEmpty ? segments.last : url;
+  } catch (_) {
+    return url;
+  }
+}
+
+Future<void> _openUrl(String url) async {
+  final uri = Uri.tryParse(url);
+  if (uri == null) return;
+  await launchUrl(uri, mode: LaunchMode.externalApplication);
+}
+
+void _openImageViewer(BuildContext context, String url) {
+  Navigator.of(context).push(
+    PageRouteBuilder<void>(
+      opaque: false,
+      barrierColor: Colors.transparent,
+      pageBuilder: (_, __, ___) => ImageViewer(imageUrl: url, heroTag: url),
+      transitionsBuilder: (_, animation, __, child) {
+        return FadeTransition(
+          opacity: CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+          ),
+          child: child,
+        );
+      },
+    ),
+  );
 }
 
 /// Componente de entrada
@@ -880,6 +955,7 @@ class _InsertNewLineIntent extends Intent {
 class _InputComponentState extends State<InputComponent> {
   bool _isSending = false;
   late final FocusNode _inputFocus;
+  final AttachmentService _attachmentService = AttachmentService();
 
   @override
   void initState() {
@@ -900,16 +976,17 @@ class _InputComponentState extends State<InputComponent> {
     return SizedBox(
       height: 70,
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
             child: Shortcuts(
-              shortcuts: const <ShortcutActivator, Intent>{
-                SingleActivator(LogicalKeyboardKey.enter):
-                    const _SendMessageIntent(),
-                SingleActivator(
+              shortcuts: <ShortcutActivator, Intent>{
+                const SingleActivator(LogicalKeyboardKey.enter):
+                    _SendMessageIntent(),
+                const SingleActivator(
                   LogicalKeyboardKey.enter,
                   shift: true,
-                ): const _InsertNewLineIntent(),
+                ): _InsertNewLineIntent(),
               },
               child: Actions(
                 actions: <Type, Action<Intent>>{
@@ -942,12 +1019,30 @@ class _InputComponentState extends State<InputComponent> {
                   focusNode: _inputFocus,
                   textInputAction: TextInputAction.newline,
                   keyboardType: TextInputType.multiline,
+                  minLines: 1,
                   maxLines: 4,
                 ),
               ),
             ),
           ),
           const SizedBox(width: 3),
+          SizedBox(
+            height: double.infinity,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 20),
+              child: IconButton(
+                tooltip: 'Anexar arquivo',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(
+                  minWidth: 56,
+                  minHeight: 56,
+                ),
+                icon: const Icon(Icons.attach_file),
+                onPressed: isEnabled ? _sendAttachment : null,
+              ),
+            ),
+          ),
+          const SizedBox(width: 2),
           SizedBox(
             height: double.infinity,
             child: Padding(
@@ -1020,7 +1115,8 @@ class _InputComponentState extends State<InputComponent> {
         'room_id': widget.roomId,
         'content': content,
         'from_id': currentUser.id,
-        'from_name': currentUser.userMetadata?['full_name'] ??
+        'from_name':
+            currentUser.userMetadata?['full_name'] ??
             currentUser.email ??
             'Usuário',
       });
@@ -1032,6 +1128,59 @@ class _InputComponentState extends State<InputComponent> {
     } catch (error) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Erro inesperado: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _sendAttachment() async {
+    if (widget.roomId == null) {
+      return;
+    }
+
+    final currentUser = Supabase.instance.client.auth.currentUser;
+    if (currentUser == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Usuário não autenticado.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSending = true;
+    });
+
+    try {
+      final upload = await _attachmentService.pickAndUpload(widget.roomId!);
+      if (upload == null) {
+        // usuário cancelou
+        return;
+      }
+
+      await Supabase.instance.client.from('messages').insert({
+        'room_id': widget.roomId,
+        'content': upload.url, // URL pública servida via CDN
+        'from_id': currentUser.id,
+        'from_name': currentUser.userMetadata?['full_name'] ??
+            currentUser.email ??
+            'Usuário',
+      });
+    } on AttachmentServiceException catch (error) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.message)),
+      );
+    } on PostgrestException catch (error) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro ao enviar anexo: ${error.message}')),
+      );
+    } catch (error) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro inesperado ao enviar anexo: $error')),
       );
     } finally {
       if (mounted) {

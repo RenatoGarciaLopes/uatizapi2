@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:zapizapi/ui/features/home/widgets/sidebar_skeleton.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:zapizapi/ui/theme/brand_colors.dart';
+import 'package:zapizapi/ui/features/home/widgets/sidebar_skeleton.dart';
+import 'package:zapizapi/services/avatar_service.dart';
 
 /// Modelo de dados utilizado para renderizar a sidebar.
 class SidebarRoomData {
@@ -50,6 +51,80 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
   bool _isFetchingRooms = false;
   Set<String> _knownRoomIds = {};
   String? _lastNotifiedRoomId;
+  String? _currentUserAvatarUrl;
+  bool _isUploadingAvatar = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrentUserAvatar();
+  }
+
+  Future<void> _loadCurrentUserAvatar() async {
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    if (currentUserId == null) return;
+    try {
+      final raw = await Supabase.instance.client
+          .from('profiles')
+          .select('avatar_url')
+          .eq('id', currentUserId)
+          .maybeSingle();
+      if (!mounted) return;
+      final map =
+          raw == null ? null : Map<String, dynamic>.from(raw as Map<dynamic, dynamic>);
+      setState(() {
+        _currentUserAvatarUrl =
+            (map?['avatar_url'] as String?)?.trim();
+      });
+    } catch (_) {
+      // Silencioso: avatar é opcional
+    }
+  }
+
+  Future<void> _changeAvatar() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+    setState(() => _isUploadingAvatar = true);
+    try {
+      final avatarService = AvatarService();
+      final upload =
+          await avatarService.pickAndUploadAvatar(userId: user.id);
+      if (upload == null) {
+        setState(() => _isUploadingAvatar = false);
+        return;
+      }
+      await Supabase.instance.client
+          .from('profiles')
+          .update({'avatar_url': upload.url})
+          .eq('id', user.id);
+      if (!mounted) return;
+      setState(() {
+        _currentUserAvatarUrl = upload.url;
+        _isUploadingAvatar = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Foto de perfil atualizada.')),
+      );
+    } on AvatarServiceException catch (e) {
+      if (!mounted) return;
+      setState(() => _isUploadingAvatar = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      setState(() => _isUploadingAvatar = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro ao salvar perfil: ${e.message}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isUploadingAvatar = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro inesperado: $e')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -57,7 +132,8 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
     final currentUser = Supabase.instance.client.auth.currentUser;
     final scheme = Theme.of(context).colorScheme;
     final theme = Theme.of(context);
-    final displayName = (currentUser?.userMetadata?['full_name'] as String?)?.trim();
+    final displayName = (currentUser?.userMetadata?['full_name'] as String?)
+        ?.trim();
     final fallbackName = (currentUser?.email ?? '').split('@').first;
     final userName = (displayName != null && displayName.isNotEmpty)
         ? displayName
@@ -85,29 +161,80 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
                   padding: const EdgeInsets.fromLTRB(20, 16, 16, 12),
                   child: Row(
                     children: [
-                      CircleAvatar(
-                        radius: 22,
-                        backgroundColor: scheme.primaryContainer,
-                        child: Icon(
-                          Icons.person_outline,
-                          color: scheme.onPrimaryContainer,
+                      InkWell(
+                        onTap: _changeAvatar,
+                        customBorder: const CircleBorder(),
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            CircleAvatar(
+                              radius: 22,
+                              backgroundColor: scheme.primaryContainer,
+                              foregroundColor: scheme.onPrimaryContainer,
+                              child: _currentUserAvatarUrl != null &&
+                                      _currentUserAvatarUrl!.isNotEmpty
+                                  ? ClipOval(
+                                      child: Image.network(
+                                        _currentUserAvatarUrl!,
+                                        width: 44,
+                                        height: 44,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => Icon(
+                                          Icons.person_outline,
+                                          color: scheme.onPrimaryContainer,
+                                        ),
+                                      ),
+                                    )
+                                  : Icon(
+                                      Icons.person_outline,
+                                      color: scheme.onPrimaryContainer,
+                                    ),
+                            ),
+                            if (_isUploadingAvatar)
+                              const SizedBox(
+                                width: 44,
+                                height: 44,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              userName,
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                fontWeight: FontWeight.w600,
-                                color: scheme.onSurface,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                        child: InkWell(
+                          onTap: _changeAvatar,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              vertical: 6,
+                              horizontal: 4,
                             ),
-                          ],
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  userName,
+                                  style:
+                                      theme.textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                    color: scheme.onSurface,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'Alterar foto',
+                                  style:
+                                      theme.textTheme.labelSmall?.copyWith(
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -143,8 +270,9 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
                             color: BrandColors.accentGreen,
                             shape: const CircleBorder(),
                             elevation: 2,
-                            shadowColor:
-                                BrandColors.accentGreen.withOpacity(0.25),
+                            shadowColor: BrandColors.accentGreen.withOpacity(
+                              0.25,
+                            ),
                             child: InkWell(
                               onTap: widget.onCreateNewConversation,
                               customBorder: const CircleBorder(),
@@ -170,117 +298,129 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
                   ),
                 ),
                 Expanded(
-            child: StreamBuilder<List<Map<String, dynamic>>>(
-              stream: Supabase.instance.client
-                  .from('room_members')
-                  .stream(primaryKey: ['room_id', 'user_id'])
-                  .eq('user_id', currentUserId),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting &&
-                    _cachedRooms.isEmpty) {
-                  return const SidebarSkeleton();
-                }
+                  child: StreamBuilder<List<Map<String, dynamic>>>(
+                    stream: Supabase.instance.client
+                        .from('room_members')
+                        .stream(primaryKey: ['room_id', 'user_id'])
+                        .eq('user_id', currentUserId),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting &&
+                          _cachedRooms.isEmpty) {
+                        return const SidebarSkeleton();
+                      }
 
-                if (snapshot.hasError) {
-                  return _ErrorMessage(
-                    message: 'Erro ao carregar conversas',
-                    details: '${snapshot.error}',
-                  );
-                }
-
-                final memberships = snapshot.data;
-
-                if (memberships == null || memberships.isEmpty) {
-                  _scheduleRoomRefresh([], currentUserId);
-                  return const _EmptyState(message: 'Nenhuma conversa encontrada');
-                }
-
-                _scheduleRoomRefresh(memberships, currentUserId);
-
-                if (_isFetchingRooms && _cachedRooms.isEmpty) {
-                  return const SidebarSkeleton();
-                }
-
-                if (_cachedRooms.isEmpty) {
-                  return const _EmptyState(
-                    message: 'Nenhuma conversa encontrada',
-                  );
-                }
-
-                return Stack(
-                  children: [
-                    ListView.separated(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      itemCount: _cachedRooms.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
-                      itemBuilder: (context, index) {
-                        final room = _cachedRooms[index];
-                        final isSelected = room.id == widget.selectedRoomId;
-
-                        return AnimatedScale(
-                          duration: const Duration(milliseconds: 200),
-                          scale: isSelected ? 1.02 : 1,
-                          child: Card(
-                            color: isSelected
-                                ? (scheme.brightness == Brightness.light
-                                    ? scheme.primaryContainer
-                                        .withOpacity(0.3)
-                                    : scheme.surfaceContainerLowest)
-                                : scheme.surface,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: ListTile(
-                              dense: true,
-                              leading: _SidebarAvatar(
-                                room: room,
-                                isSelected: isSelected,
-                                scheme: scheme,
-                              ),
-                              title: Text(
-                                room.title,
-                                style: theme.textTheme.bodyLarge?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                  color: isSelected && scheme.brightness == Brightness.light
-                                      ? scheme.onPrimaryContainer
-                                      : null,
-                                ),
-                              ),
-                              subtitle: Text(
-                                room.subtitle,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: isSelected &&
-                                          scheme.brightness == Brightness.light
-                                      ? scheme.onPrimaryContainer.withOpacity(0.9)
-                                      : null,
-                                ),
-                              ),
-                              onTap: () {
-                                widget.onRoomSelected(room);
-                                _lastNotifiedRoomId = room.id;
-                              },
-                            ),
-                          ),
+                      if (snapshot.hasError) {
+                        return _ErrorMessage(
+                          message: 'Erro ao carregar conversas',
+                          details: '${snapshot.error}',
                         );
-                      },
-                    ),
-                    if (_isFetchingRooms)
-                      const Positioned(
-                        left: 12,
-                        right: 12,
-                        top: 0,
-                        child: Padding(
-                          padding: EdgeInsets.only(bottom: 4),
-                          child: LinearProgressIndicator(minHeight: 2),
-                        ),
-                      ),
-                  ],
-                );
-              },
-            ),
+                      }
+
+                      final memberships = snapshot.data;
+
+                      if (memberships == null || memberships.isEmpty) {
+                        _scheduleRoomRefresh([], currentUserId);
+                        return const _EmptyState(
+                          message: 'Nenhuma conversa encontrada',
+                        );
+                      }
+
+                      _scheduleRoomRefresh(memberships, currentUserId);
+
+                      if (_isFetchingRooms && _cachedRooms.isEmpty) {
+                        return const SidebarSkeleton();
+                      }
+
+                      if (_cachedRooms.isEmpty) {
+                        return const _EmptyState(
+                          message: 'Nenhuma conversa encontrada',
+                        );
+                      }
+
+                      return Stack(
+                        children: [
+                          ListView.separated(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            itemCount: _cachedRooms.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 8),
+                            itemBuilder: (context, index) {
+                              final room = _cachedRooms[index];
+                              final isSelected =
+                                  room.id == widget.selectedRoomId;
+
+                              return AnimatedScale(
+                                duration: const Duration(milliseconds: 200),
+                                scale: isSelected ? 1.02 : 1,
+                                child: Card(
+                                  color: isSelected
+                                      ? (scheme.brightness == Brightness.light
+                                            ? scheme.primaryContainer
+                                                  .withOpacity(0.3)
+                                            : scheme.surfaceContainerLowest)
+                                      : scheme.surface,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: ListTile(
+                                    dense: true,
+                                    leading: _SidebarAvatar(
+                                      room: room,
+                                      isSelected: isSelected,
+                                      scheme: scheme,
+                                    ),
+                                    title: Text(
+                                      room.title,
+                                      style: theme.textTheme.bodyLarge
+                                          ?.copyWith(
+                                            fontWeight: FontWeight.w600,
+                                            color:
+                                                isSelected &&
+                                                    scheme.brightness ==
+                                                        Brightness.light
+                                                ? scheme.onPrimaryContainer
+                                                : null,
+                                          ),
+                                    ),
+                                    subtitle: Text(
+                                      room.subtitle,
+                                      style: theme.textTheme.bodySmall
+                                          ?.copyWith(
+                                            color:
+                                                isSelected &&
+                                                    scheme.brightness ==
+                                                        Brightness.light
+                                                ? scheme.onPrimaryContainer
+                                                      .withOpacity(0.9)
+                                                : null,
+                                          ),
+                                    ),
+                                    onTap: () {
+                                      widget.onRoomSelected(room);
+                                      _lastNotifiedRoomId = room.id;
+                                    },
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                          if (_isFetchingRooms)
+                            const Positioned(
+                              left: 12,
+                              right: 12,
+                              top: 0,
+                              child: Padding(
+                                padding: EdgeInsets.only(bottom: 4),
+                                child: LinearProgressIndicator(minHeight: 2),
+                              ),
+                            ),
+                        ],
+                      );
+                    },
+                  ),
                 ),
               ],
             ),
@@ -402,7 +542,8 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
           .toSet();
 
       final hasSameRooms =
-          roomIds.length == _knownRoomIds.length && roomIds.containsAll(_knownRoomIds);
+          roomIds.length == _knownRoomIds.length &&
+          roomIds.containsAll(_knownRoomIds);
 
       if (hasSameRooms && _cachedRooms.isNotEmpty) {
         if (_isFetchingRooms) {
@@ -480,10 +621,12 @@ class _SidebarAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final backgroundColor =
-        isSelected ? scheme.primary : scheme.secondaryContainer;
-    final foregroundColor =
-        isSelected ? scheme.onPrimary : scheme.onSecondaryContainer;
+    final backgroundColor = isSelected
+        ? scheme.primary
+        : scheme.secondaryContainer;
+    final foregroundColor = isSelected
+        ? scheme.onPrimary
+        : scheme.onSecondaryContainer;
 
     if (!room.isDirect) {
       return CircleAvatar(
@@ -569,10 +712,9 @@ class _ErrorMessage extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               details,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: Colors.grey[600]),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
               textAlign: TextAlign.center,
             ),
           ],
@@ -581,6 +723,3 @@ class _ErrorMessage extends StatelessWidget {
     );
   }
 }
-
-
-
