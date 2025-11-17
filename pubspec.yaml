@@ -20,6 +20,8 @@ dependencies:
   path: ^1.9.0
   uuid: ^4.5.1
   url_launcher: ^6.3.2
+  flutter_secure_storage: ^9.2.2
+  libsignal_protocol_dart: ^0.7.4
 
 dev_dependencies:
   flutter_lints: ^5.0.0

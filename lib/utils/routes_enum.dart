@@ -3,6 +3,12 @@ enum RoutesEnum {
   /// Rota de login
   login('/login'),
 
+  /// Rota de esqueci minha senha
+  forgotPassword('/forgot-password'),
+
+  /// Rota de redefinir senha
+  resetPassword('/reset-password'),
+
   /// Rota de registro
   register('/register'),
 

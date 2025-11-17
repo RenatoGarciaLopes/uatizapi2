@@ -17,6 +17,7 @@ class CustomInput extends StatelessWidget {
     this.onFieldSubmitted,
     this.minLines = 1,
     this.maxLines = 1,
+    this.suffixIcon,
   });
 
   /// Construtor da classe [CustomInput]
@@ -54,6 +55,9 @@ class CustomInput extends StatelessWidget {
 
   /// Número máximo de linhas exibidas
   final int maxLines;
+
+  /// Ícone exibido ao final do campo (ex.: olhinho de senha)
+  final Widget? suffixIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -133,6 +137,7 @@ class CustomInput extends StatelessWidget {
                   ? scheme.surfaceContainerLowest
                   : Colors.white,
               filled: true,
+              suffixIcon: suffixIcon,
             ),
           ),
         );

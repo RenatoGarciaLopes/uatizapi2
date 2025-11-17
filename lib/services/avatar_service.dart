@@ -43,7 +43,6 @@ class AvatarService {
   }) async {
     final result = await FilePicker.platform.pickFiles(
       withData: true, // Necessário na Web
-      allowMultiple: false,
       type: FileType.image,
     );
     if (result == null) return null;
@@ -78,7 +77,6 @@ class AvatarService {
           fileOptions: FileOptions(
             contentType: mime,
             cacheControl: 'public, max-age=31536000, immutable',
-            upsert: false,
           ),
         );
 

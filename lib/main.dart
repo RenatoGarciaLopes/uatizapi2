@@ -1,9 +1,12 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:zapizapi/ui/features/home/home_screen.dart';
 import 'package:zapizapi/ui/features/login/login_screen.dart';
+import 'package:zapizapi/ui/features/forgot_password/forgot_password_screen.dart';
+import 'package:zapizapi/ui/features/forgot_password/reset_password_screen.dart';
 import 'package:zapizapi/ui/features/register/register_screen.dart';
 import 'package:zapizapi/ui/theme/theme_controller.dart';
 import 'package:zapizapi/utils/routes_enum.dart';
@@ -17,14 +20,46 @@ Future<void> main() async {
   await Supabase.initialize(
     url: dotenv.env['SUPABASE_URL'] ?? '',
     anonKey: dotenv.env['SUPABASE_KEY'] ?? '',
+    authOptions: const FlutterAuthClientOptions(
+      authFlowType: AuthFlowType.pkce,
+    ),
   );
-  runApp(const MainApp());
+  // Decide rota inicial no WEB se houver ?code=... (recuperação)
+  String initialRoute = RoutesEnum.login.route;
+  if (kIsWeb) {
+    final uri = Uri.base;
+    String? code = uri.queryParameters['code'];
+    if (code == null || code.isEmpty) {
+      final fragment = uri.fragment; // ex.: /login?code=...
+      if (fragment.isNotEmpty) {
+        try {
+          final synthetic = Uri.parse(
+            'https://fragment${fragment.startsWith('/') ? '' : '/'}$fragment',
+          );
+          code = synthetic.queryParameters['code'];
+        } catch (_) {}
+      }
+    }
+    if (code != null && code.isNotEmpty) {
+      // Usa a API web para ler a sessão do callback (PKCE)
+      try {
+        await Supabase.instance.client.auth.getSessionFromUrl(uri);
+      } catch (_) {
+        // segue para tela de reset mesmo sem sessão para feedback
+      }
+      initialRoute = RoutesEnum.resetPassword.route;
+    }
+  }
+  runApp(MainApp(initialRoute: initialRoute));
 }
 
 /// Aplicação principal
 class MainApp extends StatefulWidget {
   /// Construtor da classe [MainApp]
-  const MainApp({super.key});
+  const MainApp({super.key, this.initialRoute = '/login'});
+
+  /// Rota inicial (definida em tempo de execução)
+  final String initialRoute;
 
   @override
   State<MainApp> createState() => _MainAppState();
@@ -32,6 +67,27 @@ class MainApp extends StatefulWidget {
 
 class _MainAppState extends State<MainApp> {
   final ThemeController _themeController = ThemeController();
+  late final Stream<AuthState> _authSub;
+
+  @override
+  void initState() {
+    super.initState();
+    // Escuta eventos de autenticação para detectar recuperação de senha
+    _authSub = Supabase.instance.client.auth.onAuthStateChange;
+    _authSub.listen((state) {
+      final event = state.event;
+      if (event == AuthChangeEvent.passwordRecovery) {
+        // Navega para a tela de redefinição ao abrir o deep link
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          Navigator.of(context).pushNamed(RoutesEnum.resetPassword.route);
+        });
+      }
+    });
+
+    // Removido: troca manual de code por sessão. O bootstrap já chamou
+    // getSessionFromUrl(Uri.base) quando necessário.
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -123,10 +179,14 @@ class _MainAppState extends State<MainApp> {
             ),
             routes: {
               RoutesEnum.login.route: (context) => LoginScreen(),
+              RoutesEnum.forgotPassword.route: (context) =>
+                  const ForgotPasswordScreen(),
+              RoutesEnum.resetPassword.route: (context) =>
+                  const ResetPasswordScreen(),
               RoutesEnum.register.route: (context) => const RegisterScreen(),
               RoutesEnum.home.route: (context) => const HomeScreen(),
             },
-            initialRoute: RoutesEnum.login.route,
+            initialRoute: widget.initialRoute,
           );
         },
       ),

@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:zapizapi/ui/widgets/custom_button.dart';
@@ -5,19 +6,31 @@ import 'package:zapizapi/ui/widgets/custom_input.dart';
 import 'package:zapizapi/ui/widgets/custom_text_button.dart';
 import 'package:zapizapi/utils/routes_enum.dart';
 
-// TODO: Implementar obscurecer senha
-// TODO: Implementar olhinho de visualizar senha
-
 /// Tela de login
-class LoginScreen extends StatelessWidget {
+class LoginScreen extends StatefulWidget {
   /// Construtor da classe [LoginScreen]
-  LoginScreen({super.key});
+  const LoginScreen({super.key});
 
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
   /// Controlador do campo de email
   final TextEditingController emailController = TextEditingController();
 
   /// Controlador do campo de senha
   final TextEditingController passwordController = TextEditingController();
+
+  /// Estado de visibilidade da senha
+  bool _obscurePassword = true;
+
+  @override
+  void dispose() {
+    emailController.dispose();
+    passwordController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -55,12 +68,30 @@ class LoginScreen extends StatelessWidget {
                           hint: 'Digite sua senha',
                           label: 'Senha',
                           controller: passwordController,
+                          obsecureText: _obscurePassword,
+                          suffixIcon: IconButton(
+                            onPressed: () {
+                              setState(() {
+                                _obscurePassword = !_obscurePassword;
+                              });
+                            },
+                            icon: Icon(
+                              _obscurePassword
+                                  ? Icons.visibility
+                                  : Icons.visibility_off,
+                            ),
+                          ),
                         ),
                         Align(
                           alignment: AlignmentGeometry.centerRight,
                           child: CustomTextButton(
                             buttonText: 'Esqueci minha senha',
-                            buttonAction: () {},
+                            buttonAction: () async {
+                              await Navigator.pushNamed(
+                                context,
+                                RoutesEnum.forgotPassword.route,
+                              );
+                            },
                           ),
                         ),
                         const SizedBox(height: 18),
@@ -71,16 +102,51 @@ class LoginScreen extends StatelessWidget {
                             final navigator = Navigator.of(context);
                             final supabase = Supabase.instance.client;
 
-                            final response = await supabase.auth
-                                .signInWithPassword(
-                                  password: passwordController.text,
-                                  email: emailController.text,
-                                );
+                            try {
+                              final response = await supabase.auth
+                                  .signInWithPassword(
+                                password: passwordController.text.trim(),
+                                email: emailController.text.trim(),
+                              );
 
-                            debugPrint(response.user.toString());
-                            await navigator.pushReplacementNamed(
-                              RoutesEnum.home.route,
-                            );
+                              if (response.user != null) {
+                                await navigator.pushReplacementNamed(
+                                  RoutesEnum.home.route,
+                                );
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Não foi possível efetuar o login. Verifique suas credenciais.',
+                                    ),
+                                  ),
+                                );
+                              }
+                            } on AuthException catch (e) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(e.message.isNotEmpty
+                                      ? e.message
+                                      : 'Login inválido. Verifique email e senha.'),
+                                ),
+                              );
+                            } on SocketException {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Falha de rede. Verifique sua conexão e tente novamente.',
+                                  ),
+                                ),
+                              );
+                            } catch (e) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Ocorreu um erro inesperado ao fazer login.',
+                                  ),
+                                ),
+                              );
+                            }
                           },
                         ),
                         const SizedBox(height: 18),
