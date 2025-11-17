@@ -14,9 +14,6 @@ import 'package:zapizapi/ui/features/home/widgets/open_conversations_sidebar.dar
 import 'package:zapizapi/ui/theme/theme_controller.dart';
 import 'package:zapizapi/ui/widgets/custom_input.dart';
 import 'package:zapizapi/utils/routes_enum.dart';
-import 'package:zapizapi/services/e2ee/device_id_store.dart';
-import 'package:zapizapi/services/e2ee/e2ee_service.dart';
-import 'package:zapizapi/services/e2ee/signal_engine.dart';
 
 // TODO: Implementar controle de sessão
 // TODO: Melhorar Arquitatura com viewmodels e services
@@ -47,9 +44,6 @@ class _HomeScreenState extends State<HomeScreen>
   late final AnimationController _introController;
   late final Animation<Offset> _slideIn;
   late final Animation<double> _fadeIn;
-  RealtimeChannel? _e2eeChannel;
-  E2EEService? _e2ee;
-  String? _deviceId;
 
   @override
   void initState() {
@@ -74,7 +68,6 @@ class _HomeScreenState extends State<HomeScreen>
     );
     _introController.forward();
     _subscribeGlobalPresence();
-    _bootstrapE2EE();
   }
 
   @override
@@ -82,7 +75,6 @@ class _HomeScreenState extends State<HomeScreen>
     _typingResetTimer?.cancel();
     _roomChannel?.unsubscribe();
     _globalPresenceChannel?.unsubscribe();
-    _e2eeChannel?.unsubscribe();
     _introController.dispose();
     super.dispose();
   }
@@ -98,56 +90,6 @@ class _HomeScreenState extends State<HomeScreen>
         return _buildDesktopScaffold(context);
       },
     );
-  }
-
-  Future<void> _bootstrapE2EE() async {
-    final client = Supabase.instance.client;
-    final user = client.auth.currentUser;
-    if (user == null) return;
-    _e2ee = E2EEService(
-      supabase: client,
-      signalEngine: LibSignalEngine(),
-    );
-    final device = await _e2ee!.initializeDevice(deviceName: 'Este dispositivo');
-    _deviceId = device.deviceId;
-    _subscribeE2EEMessages();
-  }
-
-  void _subscribeE2EEMessages() {
-    final client = Supabase.instance.client;
-    final userId = client.auth.currentUser?.id;
-    if (userId == null) return;
-    _e2eeChannel = client.channel('e2ee_messages_$userId').onPostgresChanges(
-      event: PostgresChangeEvent.insert,
-      schema: 'public',
-      table: 'e2ee_messages',
-      callback: (payload) async {
-        try {
-          if (_e2ee == null) return;
-          final row = payload.newRecord;
-          if (row == null) return;
-          if (row['recipient_user_id'] != userId) return;
-          final senderUserId = row['sender_user_id'] as String?;
-          final senderDeviceId = row['sender_device_id'] as String?;
-          final isPreKey = (row['is_prekey'] as bool?) ?? false;
-          final data = row['ciphertext'];
-          if (senderUserId == null || senderDeviceId == null || data == null) return;
-          final bytes = Uint8List.fromList((data as List).cast<int>());
-          final text = await _e2ee!.decryptToText(
-            senderUserId: senderUserId,
-            senderDeviceId: senderDeviceId,
-            ciphertext: bytes,
-            isPreKey: isPreKey,
-          );
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('E2EE: $text')),
-          );
-        } catch (_) {
-          // falha ao decifrar (possível falta de sessão); ignorar por ora
-        }
-      },
-    ).subscribe();
   }
 
   Scaffold _buildMobileScaffold(BuildContext context) {
@@ -2287,73 +2229,17 @@ class _InputComponentState extends State<InputComponent> {
         _setTyping(false);
         widget.onCancelEdit?.call();
       } else {
-        // Envio E2EE: para cada device do destinatário direto
-        final client = Supabase.instance.client;
-        // Resolve destinatário da sala (DM)
-        final membersResp = await client
-            .from('room_members')
-            .select('user_id')
-            .eq('room_id', widget.roomId!)
-            .neq('user_id', currentUser.id);
-        final members = (membersResp as List?)?.whereType<Map<String, dynamic>>().toList() ?? const [];
-        if (members.isEmpty) {
-          throw Exception('Não foi possível identificar o destinatário.');
-        }
-        final recipientUserId = members.first['user_id'] as String;
-        // Lista devices do destinatário
-        final devicesResp = await client
-            .from('e2ee_devices')
-            .select('device_id')
-            .eq('user_id', recipientUserId);
-        final devices = (devicesResp as List?)?.whereType<Map<String, dynamic>>().toList() ?? const [];
-        if (devices.isEmpty) {
-          // Fallback: envia mensagem legada (plaintext) até o destinatário habilitar E2EE
-          await client.from('messages').insert({
-            'room_id': widget.roomId,
-            'content': content,
-            'from_id': currentUser.id,
-            'from_name': currentUser.userMetadata?['full_name'] ??
-                currentUser.email ??
-                'Usuário',
-            'parent_id': widget.replyToMessage != null
-                ? widget.replyToMessage!['id']
-                : null,
-          });
-          widget.controller.clear();
-          _setTyping(false);
-          if (widget.replyToMessage != null) {
-            widget.onCancelReply?.call();
-          }
-          return;
-        }
-        // Resolve meu deviceId de servidor
-        String? myDeviceId = await DeviceIdStore().getServerDeviceId();
-        final e2ee = E2EEService(
-          supabase: client,
-          signalEngine: LibSignalEngine(),
-        );
-        if (myDeviceId == null) {
-          final d = await e2ee.initializeDevice(deviceName: 'Este dispositivo');
-          myDeviceId = d.deviceId;
-        } else {
-          await e2ee.initializeDevice(deviceName: 'Este dispositivo');
-        }
-        // Garante sessão e envia para cada device do destinatário
-        for (final d in devices) {
-          final recipientDeviceId = d['device_id'] as String;
-          await e2ee.initiateSessionX3DH(
-            myDeviceId: myDeviceId,
-            remoteUserId: recipientUserId,
-            remoteDeviceId: recipientDeviceId,
-          );
-          await e2ee.sendEncryptedText(
-            roomId: widget.roomId!,
-            myDeviceId: myDeviceId,
-            recipientUserId: recipientUserId,
-            recipientDeviceId: recipientDeviceId,
-            messageText: content,
-          );
-        }
+        await Supabase.instance.client.from('messages').insert({
+          'room_id': widget.roomId,
+          'content': content,
+          'from_id': currentUser.id,
+          'from_name': currentUser.userMetadata?['full_name'] ??
+              currentUser.email ??
+              'Usuário',
+          'parent_id': widget.replyToMessage != null
+              ? widget.replyToMessage!['id']
+              : null,
+        });
         widget.controller.clear();
         _setTyping(false);
         if (widget.replyToMessage != null) {
