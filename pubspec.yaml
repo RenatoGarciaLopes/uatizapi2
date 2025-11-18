@@ -36,7 +36,7 @@ flutter:
     - assets/logos/logo_login.png
     - assets/logos/uatizapi_logo.png
     - assets/icons/ic_pen-new-square-broken.svg
-    - assets/lottie/arty_chat_20251118123035.webm
+    - assets/lottie/arty_chat_20251118122943.gif
     - .env
   uses-material-design: true
 
