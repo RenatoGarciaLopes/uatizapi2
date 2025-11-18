@@ -46,7 +46,7 @@ class NotificationService {
   /// Pede permissão de notificações (principalmente necessário em iOS/macOS/Web).
   Future<void> _requestPermission() async {
     final settings = await _messaging.requestPermission(
-      announcement: false,
+      
     );
 
     debugPrint('Permissão de notificação: ${settings.authorizationStatus}');

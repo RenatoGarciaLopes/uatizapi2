@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  video_player: ^2.9.2
   firebase_core: ^3.5.0
   firebase_messaging: ^15.0.3
   flutter_dotenv: ^6.0.0
@@ -35,7 +36,7 @@ flutter:
     - assets/logos/logo_login.png
     - assets/logos/uatizapi_logo.png
     - assets/icons/ic_pen-new-square-broken.svg
-    - assets/icons/ic-menu-dots-circle-broken.svg
+    - assets/lottie/arty_chat_20251118123035.webm
     - .env
   uses-material-design: true
 

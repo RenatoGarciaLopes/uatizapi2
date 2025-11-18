@@ -1,6 +1,8 @@
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:video_player/video_player.dart';
 import 'package:zapizapi/services/notification_service.dart';
 import 'package:zapizapi/ui/widgets/custom_button.dart';
 import 'package:zapizapi/ui/widgets/custom_input.dart';
@@ -17,6 +19,9 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  late final VideoPlayerController _videoController;
+  bool _isVideoInitialized = false;
+
   /// Controlador do campo de email
   final TextEditingController emailController = TextEditingController();
 
@@ -27,7 +32,26 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
 
   @override
+  void initState() {
+    super.initState();
+
+    _videoController = VideoPlayerController.asset(
+      'assets/lottie/arty_chat_20251118123035.webm',
+    )
+      ..setLooping(true)
+      ..setVolume(0)
+      ..initialize().then((_) {
+        if (!mounted) return;
+        setState(() {
+          _isVideoInitialized = true;
+        });
+        _videoController.play();
+      });
+  }
+
+  @override
   void dispose() {
+    _videoController.dispose();
     emailController.dispose();
     passwordController.dispose();
     super.dispose();
@@ -49,9 +73,17 @@ class _LoginScreenState extends State<LoginScreen> {
                         : constraints.maxWidth,
                     child: Column(
                       children: [
-                        const Image(
-                          image: AssetImage('assets/logos/logo_login.png'),
+                        SizedBox(
                           height: 280,
+                          child: _isVideoInitialized
+                              ? AspectRatio(
+                                  aspectRatio:
+                                      _videoController.value.aspectRatio,
+                                  child: VideoPlayer(_videoController),
+                                )
+                              : const Center(
+                                  child: CircularProgressIndicator(),
+                                ),
                         ),
                         const SizedBox(height: 18),
                         const SizedBox(

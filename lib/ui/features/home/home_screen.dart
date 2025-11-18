@@ -285,9 +285,10 @@ class _HomeScreenState extends State<HomeScreen>
                                 });
                                 _inputFocus.requestFocus();
                               },
-                              showTypingIndicator:
-                                  (_selectedRoomData?.isDirect ?? false) &&
-                                      _isPeerTyping,
+                              // Em qualquer tipo de sala (direta ou grupo),
+                              // exibe o indicador visual de digitação quando
+                              // algum outro usuário estiver digitando.
+                              showTypingIndicator: _isPeerTyping,
                             ),
                             InputComponent(
                               controller: _textController,
@@ -370,39 +371,39 @@ class _HomeScreenState extends State<HomeScreen>
       );
     }
 
-    final showStatus = selectedRoom.isDirect;
     Widget? statusWidget;
-    if (showStatus) {
-      if (_isPeerTyping) {
-        statusWidget = const _TypingDots();
-      } else {
-        final isOnline = _directPeerUserId != null &&
-            _onlineUserIds.contains(_directPeerUserId);
-        final dotColor =
-            isOnline ? Colors.lightGreenAccent : headerForeground.withOpacity(0.6);
-        final text = isOnline ? 'Online' : 'Offline';
-        statusWidget = Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 8,
-              height: 8,
-              margin: const EdgeInsets.only(right: 6),
-              decoration: BoxDecoration(
-                color: dotColor,
-                shape: BoxShape.circle,
-              ),
+    final isDirect = selectedRoom.isDirect;
+    if (_isPeerTyping) {
+      // Para conversas diretas e grupos, quando alguém está digitando
+      // mostramos o feedback de digitação.
+      statusWidget = const _TypingDots();
+    } else if (isDirect) {
+      final isOnline = _directPeerUserId != null &&
+          _onlineUserIds.contains(_directPeerUserId);
+      final dotColor =
+          isOnline ? Colors.lightGreenAccent : headerForeground.withOpacity(0.6);
+      final text = isOnline ? 'Online' : 'Offline';
+      statusWidget = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            margin: const EdgeInsets.only(right: 6),
+            decoration: BoxDecoration(
+              color: dotColor,
+              shape: BoxShape.circle,
             ),
-            Text(
-              text,
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: headerForeground.withOpacity(0.9),
-                fontWeight: FontWeight.w500,
-              ),
+          ),
+          Text(
+            text,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: headerForeground.withOpacity(0.9),
+              fontWeight: FontWeight.w500,
             ),
-          ],
-        );
-      }
+          ),
+        ],
+      );
     }
 
     final isGroup = !selectedRoom.isDirect;
@@ -1224,7 +1225,7 @@ class _GroupDetailsSheetState extends State<_GroupDetailsSheet> {
 
                             Navigator.of(dialogContext).pop();
                             ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
+                              const SnackBar(
                                 content: Text(
                                   'Integrante adicionado com sucesso.',
                                 ),
@@ -1569,8 +1570,12 @@ class ChatComponent extends StatefulWidget {
 class _ChatComponentState extends State<ChatComponent> {
   final ScrollController _scrollController = ScrollController();
   int _lastMessageCount = 0;
+  int _lastReactionsCount = 0;
   Stream<List<Map<String, dynamic>>>? _messagesStream;
   Stream<List<Map<String, dynamic>>>? _reactionsStream;
+  // Snapshot local usado como fallback para garantir atualização imediata
+  // das reações após um toggle, mesmo que o stream do Supabase não dispare.
+  List<Map<String, dynamic>>? _reactionsSnapshotOverride;
   String? _hoveredMessageId;
   final Map<String, double> _bubbleWidthByMessageId = {};
   String? _activeMenuMessageId;
@@ -1610,6 +1615,8 @@ class _ChatComponentState extends State<ChatComponent> {
     super.didUpdateWidget(oldWidget);
     if (widget.roomId != oldWidget.roomId) {
       _lastMessageCount = 0;
+      _lastReactionsCount = 0;
+      _reactionsSnapshotOverride = null;
       _messagesStream = _createMessagesStream(widget.roomId);
       _reactionsStream = _createReactionsStream(widget.roomId);
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1624,6 +1631,26 @@ class _ChatComponentState extends State<ChatComponent> {
       if (_lastTypingVisible) {
         _scheduleScrollToBottom();
       }
+    }
+  }
+
+  /// Recarrega manualmente as reações da sala informada e armazena um
+  /// snapshot local para forçar a atualização visual imediata.
+  Future<void> _reloadReactionsForRoom(String roomId) async {
+    try {
+      final response = await Supabase.instance.client
+          .from('message_reactions')
+          .select()
+          .eq('room_id', roomId);
+      if (!mounted) return;
+      final list = (response as List)
+          .whereType<Map<String, dynamic>>()
+          .toList(growable: false);
+      setState(() {
+        _reactionsSnapshotOverride = list;
+      });
+    } catch (e) {
+      debugPrint('Erro ao recarregar reações: $e');
     }
   }
 
@@ -1649,6 +1676,13 @@ class _ChatComponentState extends State<ChatComponent> {
         _scrollController.jumpTo(target);
       }
     });
+  }
+
+  bool _isNearBottom({double threshold = 64}) {
+    if (!_scrollController.hasClients) return false;
+    final position = _scrollController.position;
+    final diff = position.maxScrollExtent - position.pixels;
+    return diff <= threshold;
   }
 
   @override
@@ -1709,7 +1743,18 @@ class _ChatComponentState extends State<ChatComponent> {
           return StreamBuilder<List<Map<String, dynamic>>>(
             stream: _reactionsStream,
             builder: (context, reactionsSnap) {
-              final reactions = reactionsSnap.data ?? const <Map<String, dynamic>>[];
+              // Se tivermos um snapshot local, ele tem prioridade para
+              // garantir que o toggle apareça imediatamente.
+              final reactions = _reactionsSnapshotOverride ??
+                  reactionsSnap.data ??
+                  const <Map<String, dynamic>>[];
+              final reactionsCount = reactions.length;
+              final bool shouldStickToBottom =
+                  reactionsCount != _lastReactionsCount && _isNearBottom();
+              _lastReactionsCount = reactionsCount;
+              if (shouldStickToBottom) {
+                _scheduleScrollToBottom(animated: false);
+              }
               final countsByMessage = <String, Map<String, int>>{};
               final myReactsKey = <String>{}; // "$messageId|$emoji"
               for (final r in reactions) {
@@ -2178,6 +2223,9 @@ class _ChatComponentState extends State<ChatComponent> {
           'emoji': emoji,
         });
       }
+      // Garante que a UI reflita imediatamente o estado mais recente,
+      // mesmo se o stream de Realtime não estiver disparando corretamente.
+      await _reloadReactionsForRoom(roomId);
     } catch (e) {
       debugPrint('Erro ao alternar reação: $e');
     }
@@ -3211,6 +3259,10 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
   Map<String, dynamic>? _selectedMessage;
   Map<String, dynamic>? _replyTargetMessage;
   Map<String, dynamic>? _editingMessage;
+  // Token usado para forçar o rebuild do ChatComponent e,
+  // consequentemente, o recarregamento das mensagens/reações,
+  // sem precisar sair e entrar novamente na conversa.
+  int _chatReloadToken = 0;
 
   @override
   void initState() {
@@ -3392,6 +3444,13 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
           'emoji': emoji,
         });
       }
+      // Força o ChatComponent a ser reconstruído, garantindo que
+      // as reações atualizadas sejam buscadas sem precisar sair da tela.
+      if (mounted) {
+        setState(() {
+          _chatReloadToken++;
+        });
+      }
     } catch (e) {
       debugPrint('Erro ao alternar reação (mobile): $e');
     }
@@ -3465,26 +3524,29 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
     final isDarkMode = widget.isDarkMode;
     final themeController = widget.themeController;
     Widget? subtitle;
-    if (widget.roomData?.isDirect ?? false) {
-      if (_peerTyping) {
-        subtitle = const _TypingDots();
-      } else {
-        final isOnline = _peerUserId != null && _onlineUserIds.contains(_peerUserId);
-        final text = isOnline ? 'Online' : 'Offline';
-        final dotColor = isOnline ? Colors.lightGreen : Theme.of(context).colorScheme.onSurfaceVariant;
-        subtitle = Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 8,
-              height: 8,
-              margin: const EdgeInsets.only(right: 6),
-              decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
-            ),
-            Text(text),
-          ],
-        );
-      }
+    final isDirect = widget.roomData?.isDirect ?? false;
+    if (_peerTyping) {
+      // Em qualquer tipo de sala (direta ou grupo), exibimos o texto
+      // "Digitando..." abaixo do título quando alguém estiver digitando.
+      subtitle = const _TypingDots();
+    } else if (isDirect) {
+      final isOnline = _peerUserId != null && _onlineUserIds.contains(_peerUserId);
+      final text = isOnline ? 'Online' : 'Offline';
+      final dotColor = isOnline
+          ? Colors.lightGreen
+          : Theme.of(context).colorScheme.onSurfaceVariant;
+      subtitle = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            margin: const EdgeInsets.only(right: 6),
+            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+          ),
+          Text(text),
+        ],
+      );
     }
 
     return Scaffold(
@@ -3605,6 +3667,7 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
         child: Column(
           children: [
             ChatComponent(
+              key: ValueKey('${widget.roomId}#$_chatReloadToken'),
               roomId: widget.roomId,
               selectedMessageId:
                   (_selectedMessage != null ? _selectedMessage!['id'] as String? : null),
@@ -3642,8 +3705,9 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
                   _selectedMessage = message;
                 });
               },
-              showTypingIndicator:
-                  (widget.roomData?.isDirect ?? false) && _peerTyping,
+              // Mostra o "bubble" de digitação para qualquer sala quando
+              // recebemos evento de digitação de outro usuário.
+              showTypingIndicator: _peerTyping,
             ),
             InputComponent(
               controller: widget.textController,

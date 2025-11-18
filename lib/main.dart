@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:zapizapi/firebase_options.dart';
 import 'package:zapizapi/services/notification_service.dart';
 import 'package:zapizapi/ui/features/forgot_password/forgot_password_screen.dart';
 import 'package:zapizapi/ui/features/forgot_password/reset_password_screen.dart';
@@ -13,7 +14,6 @@ import 'package:zapizapi/ui/features/login/login_screen.dart';
 import 'package:zapizapi/ui/features/register/register_screen.dart';
 import 'package:zapizapi/ui/theme/theme_controller.dart';
 import 'package:zapizapi/utils/routes_enum.dart';
-import 'package:zapizapi/firebase_options.dart';
 
 // TODO: Implementar change notifier na main e injetar gerenciamento de estado
 // no register screen
