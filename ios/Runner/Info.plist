@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Zapizapi</string>
+	<string>Uatizapi 2</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -13,7 +13,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>zapizapi</string>
+	<string>Uatizapi 2</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -45,5 +45,17 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- URL scheme para permitir abrir o app via zapizapi:// -->
+	<key>CFBundleURLTypes</key>
+	<Array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>zapizapi</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>zapizapi</string>
+			</array>
+		</dict>
+	</Array>
 </dict>
 </plist>

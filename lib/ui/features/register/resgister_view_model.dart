@@ -113,17 +113,25 @@ class RegisterViewModel extends ChangeNotifier {
         password: passwordController.text,
         email: emailController.text,
       );
-      await navigateToLogin(navigator);
-      fToast.showToast(
-        child: const CustomToast(
-          errorText:
-              '''Registro realizado com sucesso! Verifique seu email para confirmar.''',
-          backgroundColor: Colors.green,
-          icon: Icons.check_circle,
+      // Exibe um modal explicando a necessidade de confirmar o e-mail
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Confirme seu e-mail'),
+          content: const Text(
+            'Enviamos um e-mail com um link de confirmação para o endereço informado.\n\n'
+            'É obrigatório confirmar seu e-mail antes de conseguir acessar o aplicativo.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Ok, entendi'),
+            ),
+          ],
         ),
-        gravity: ToastGravity.TOP,
-        toastDuration: const Duration(seconds: 4),
       );
+      await navigateToLogin(navigator);
       _isLoading = false;
       notifyListeners();
     } on Exception catch (e) {

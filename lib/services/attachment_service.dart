@@ -44,7 +44,6 @@ class AttachmentService {
     final result = await FilePicker.platform.pickFiles(
       // Web não possui `path`, então precisamos dos bytes. Para 20MB é aceitável.
       withData: true,
-      allowMultiple: false,
     );
     if (result == null) return null;
 
@@ -74,7 +73,6 @@ class AttachmentService {
           fileOptions: FileOptions(
             contentType: mime,
             cacheControl: 'public, max-age=31536000, immutable',
-            upsert: false,
           ),
         );
 

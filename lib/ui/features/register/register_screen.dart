@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 import 'package:zapizapi/ui/features/register/resgister_view_model.dart';
 import 'package:zapizapi/ui/widgets/custom_button.dart';
 import 'package:zapizapi/ui/widgets/custom_input.dart';
@@ -61,6 +62,33 @@ class FormWidget extends StatefulWidget {
 }
 
 class _FormWidgetState extends State<FormWidget> {
+  late final VideoPlayerController _videoController;
+  bool _isVideoInitialized = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _videoController = VideoPlayerController.asset(
+      'assets/lottie/arty_chat_20251118123035.webm',
+    )
+      ..setLooping(true)
+      ..setVolume(0)
+      ..initialize().then((_) {
+        if (!mounted) return;
+        setState(() {
+          _isVideoInitialized = true;
+        });
+        _videoController.play();
+      });
+  }
+
+  @override
+  void dispose() {
+    _videoController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Form(
@@ -68,9 +96,16 @@ class _FormWidgetState extends State<FormWidget> {
       child: Column(
         spacing: 4,
         children: [
-          const Image(
-            image: AssetImage('assets/logos/logo_login.png'),
+          SizedBox(
             height: 280,
+            child: _isVideoInitialized
+                ? AspectRatio(
+                    aspectRatio: _videoController.value.aspectRatio,
+                    child: VideoPlayer(_videoController),
+                  )
+                : const Center(
+                    child: CircularProgressIndicator(),
+                  ),
           ),
           const SizedBox(
             width: double.infinity,
@@ -106,7 +141,7 @@ class _FormWidgetState extends State<FormWidget> {
           CustomButton(
             icon: widget.viewModel.isLoading ? Icons.hourglass_empty : null,
             buttonText: 'Registrar',
-            backgroundColor: const Color(0xFF03A9F4),
+            backgroundColor: Theme.of(context).colorScheme.primary,
             buttonAction: () async =>
                 widget.viewModel.registerButtonAction(context),
           ),

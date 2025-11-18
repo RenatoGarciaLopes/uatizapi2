@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:zapizapi/ui/theme/brand_colors.dart';
-import 'package:zapizapi/ui/features/home/widgets/sidebar_skeleton.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:zapizapi/services/avatar_service.dart';
+import 'package:zapizapi/ui/features/home/widgets/sidebar_skeleton.dart';
+import 'package:zapizapi/ui/theme/brand_colors.dart';
 
 /// Modelo de dados utilizado para renderizar a sidebar.
 class SidebarRoomData {
@@ -29,6 +29,7 @@ class OpenConversationsSidebar extends StatefulWidget {
     required this.onRoomSelected,
     this.selectedRoomId,
     this.onCreateNewConversation,
+    this.width,
     super.key,
   });
 
@@ -40,6 +41,8 @@ class OpenConversationsSidebar extends StatefulWidget {
 
   /// Callback para acionar criação de nova conversa.
   final VoidCallback? onCreateNewConversation;
+  /// Largura desejada. Se nulo, usa 280 (padrão desktop).
+  final double? width;
 
   @override
   State<OpenConversationsSidebar> createState() =>
@@ -53,11 +56,90 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
   String? _lastNotifiedRoomId;
   String? _currentUserAvatarUrl;
   bool _isUploadingAvatar = false;
+  Stream<List<Map<String, dynamic>>>? _membershipsStream;
 
   @override
   void initState() {
     super.initState();
     _loadCurrentUserAvatar();
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    if (currentUserId != null) {
+      _membershipsStream = Supabase.instance.client
+          .from('room_members')
+          .stream(primaryKey: ['room_id', 'user_id'])
+          .eq('user_id', currentUserId);
+    }
+  }
+
+  Future<void> _showAvatarModal() async {
+    final scheme = Theme.of(context).colorScheme;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      useSafeArea: true,
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircleAvatar(
+                radius: 56,
+                backgroundColor: scheme.surfaceContainerHigh,
+                foregroundColor: scheme.onSurfaceVariant,
+                child: _currentUserAvatarUrl != null &&
+                        _currentUserAvatarUrl!.isNotEmpty
+                    ? ClipOval(
+                        child: Image.network(
+                          _currentUserAvatarUrl!,
+                          width: 112,
+                          height: 112,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Icon(
+                            Icons.person_outline,
+                            color: scheme.onSurfaceVariant,
+                            size: 56,
+                          ),
+                        ),
+                      )
+                    : Icon(
+                        Icons.person_outline,
+                        color: scheme.onSurfaceVariant,
+                        size: 56,
+                      ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _isUploadingAvatar
+                          ? null
+                          : () {
+                              // Fecha o modal e depois remove o avatar
+                              Navigator.of(context).pop();
+                              _removeAvatar();
+                            },
+                      icon: const Icon(Icons.delete_outline),
+                      label: const Text('Remover foto'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _isUploadingAvatar ? null : _pickNewAvatar,
+                      icon: const Icon(Icons.photo_library_outlined),
+                      label: const Text('Escolher foto'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _loadCurrentUserAvatar() async {
@@ -81,7 +163,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
     }
   }
 
-  Future<void> _changeAvatar() async {
+  Future<void> _pickNewAvatar() async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) return;
     setState(() => _isUploadingAvatar = true);
@@ -126,6 +208,38 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
     }
   }
 
+  Future<void> _removeAvatar() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+    setState(() => _isUploadingAvatar = true);
+    try {
+      await Supabase.instance.client
+          .from('profiles')
+          .update({'avatar_url': null})
+          .eq('id', user.id);
+      if (!mounted) return;
+      setState(() {
+        _currentUserAvatarUrl = null;
+        _isUploadingAvatar = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Foto de perfil removida.')),
+      );
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      setState(() => _isUploadingAvatar = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro ao atualizar perfil: ${e.message}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isUploadingAvatar = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro inesperado: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentUserId = Supabase.instance.client.auth.currentUser?.id;
@@ -150,7 +264,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
         color: scheme.surface,
         shadowColor: Colors.black.withOpacity(0.12),
         child: SizedBox(
-          width: 280,
+          width: widget.width ?? 280,
           child: SafeArea(
             top: false,
             bottom: false,
@@ -162,7 +276,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
                   child: Row(
                     children: [
                       InkWell(
-                        onTap: _changeAvatar,
+                        onTap: _showAvatarModal,
                         customBorder: const CircleBorder(),
                         child: Stack(
                           alignment: Alignment.center,
@@ -204,7 +318,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: InkWell(
-                          onTap: _changeAvatar,
+                          onTap: _showAvatarModal,
                           borderRadius: BorderRadius.circular(8),
                           child: Padding(
                             padding: const EdgeInsets.symmetric(
@@ -237,16 +351,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      SvgPicture.asset(
-                        'assets/icons/ic-menu-dots-circle-broken.svg',
-                        width: 24,
-                        height: 24,
-                        colorFilter: ColorFilter.mode(
-                          scheme.onSurfaceVariant,
-                          BlendMode.srcIn,
-                        ),
-                      ),
+                     
                     ],
                   ),
                 ),
@@ -299,11 +404,11 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
                 ),
                 Expanded(
                   child: StreamBuilder<List<Map<String, dynamic>>>(
-                    stream: Supabase.instance.client
-                        .from('room_members')
-                        .stream(primaryKey: ['room_id', 'user_id'])
-                        .eq('user_id', currentUserId),
+                    stream: _membershipsStream,
                     builder: (context, snapshot) {
+                      if (_membershipsStream == null) {
+                        return const SidebarSkeleton();
+                      }
                       if (snapshot.connectionState == ConnectionState.waiting &&
                           _cachedRooms.isEmpty) {
                         return const SidebarSkeleton();
@@ -453,7 +558,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
     final rawRoomsResponse = await Supabase.instance.client
         .from('rooms')
         .select(
-          'id, name, type, updated_at, created_at',
+          'id, name, type, updated_at, created_at, avatar_url',
         )
         .filter('id', 'in', idsFilter);
 
@@ -511,6 +616,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
       } else {
         title = name?.isNotEmpty ?? false ? name! : 'Grupo';
         subtitle = '${relatedMembers.length} participante(s)';
+        avatarUrl = (room['avatar_url'] as String?)?.trim();
       }
 
       rooms.add(
@@ -519,7 +625,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
           title: title,
           subtitle: subtitle,
           isDirect: type == 'direct',
-          avatarUrl: type == 'direct' ? avatarUrl : null,
+          avatarUrl: avatarUrl,
         ),
       );
     }
@@ -545,12 +651,10 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
           roomIds.length == _knownRoomIds.length &&
           roomIds.containsAll(_knownRoomIds);
 
-      if (hasSameRooms && _cachedRooms.isNotEmpty) {
-        if (_isFetchingRooms) {
-          setState(() {
-            _isFetchingRooms = false;
-          });
-        }
+      // Evita disparar várias requisições para o mesmo conjunto de salas.
+      // Se já estamos buscando (_isFetchingRooms) ou já temos cache para esse
+      // mesmo conjunto de rooms, não iniciamos uma nova chamada.
+      if (hasSameRooms && (_isFetchingRooms || _cachedRooms.isNotEmpty)) {
         return;
       }
 
@@ -628,7 +732,28 @@ class _SidebarAvatar extends StatelessWidget {
         ? scheme.onPrimary
         : scheme.onSecondaryContainer;
 
+    final avatarUrl = room.avatarUrl?.trim();
+
     if (!room.isDirect) {
+      if (avatarUrl != null && avatarUrl.isNotEmpty) {
+        return CircleAvatar(
+          backgroundColor: backgroundColor,
+          foregroundColor: foregroundColor,
+          child: ClipOval(
+            child: Image.network(
+              avatarUrl,
+              width: 40,
+              height: 40,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Icon(
+                Icons.group_outlined,
+                color: foregroundColor,
+              ),
+            ),
+          ),
+        );
+      }
+
       return CircleAvatar(
         backgroundColor: backgroundColor,
         child: Icon(
@@ -637,8 +762,6 @@ class _SidebarAvatar extends StatelessWidget {
         ),
       );
     }
-
-    final avatarUrl = room.avatarUrl?.trim();
 
     if (avatarUrl != null && avatarUrl.isNotEmpty) {
       return CircleAvatar(
