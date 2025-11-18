@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
@@ -42,7 +44,8 @@ Future<void> main() async {
   );
 
   // Inicializa o serviço de notificações (permissões + token)
-  await NotificationService.instance.init();
+  // Sem bloquear o carregamento da UI enquanto a permissão é solicitada.
+  unawaited(NotificationService.instance.init());
 
   // Verifica se há uma sessão ativa do Supabase
   final supabase = Supabase.instance.client;

@@ -39,6 +39,13 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="zapizapi" android:host="auth-callback"/>
             </intent-filter>
+            <!-- Deep link genérico para abrir o app via zapizapi:// -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="zapizapi" />
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

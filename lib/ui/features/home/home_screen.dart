@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:async';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -15,6 +17,9 @@ import 'package:zapizapi/ui/features/home/widgets/open_conversations_sidebar.dar
 import 'package:zapizapi/ui/theme/theme_controller.dart';
 import 'package:zapizapi/ui/widgets/custom_input.dart';
 import 'package:zapizapi/utils/routes_enum.dart';
+
+// Resultado interno do modal de sugestão de app (web mobile)
+enum _AppSuggestionResult { stayOnWeb, goToApp }
 
 // TODO: Implementar controle de sessão
 // TODO: Melhorar Arquitatura com viewmodels e services
@@ -46,6 +51,9 @@ class _HomeScreenState extends State<HomeScreen>
   late final AnimationController _introController;
   late final Animation<Offset> _slideIn;
   late final Animation<double> _fadeIn;
+  bool _hasHandledInvite = false;
+  bool _hasShownAppSuggestion = false;
+  int _sidebarReloadKey = 0;
 
   @override
   void initState() {
@@ -71,6 +79,7 @@ class _HomeScreenState extends State<HomeScreen>
     );
     _introController.forward();
     _subscribeGlobalPresence();
+    _checkInviteFromUrl();
   }
 
   @override
@@ -97,6 +106,267 @@ class _HomeScreenState extends State<HomeScreen>
       _globalPresenceChannel?.unsubscribe();
       _globalPresenceChannel = null;
       setState(_onlineUserIds.clear);
+    }
+  }
+
+  void _checkInviteFromUrl() {
+    if (_hasHandledInvite) {
+      return;
+    }
+
+    final uri = Uri.base;
+    String? roomId = uri.queryParameters['room'];
+
+    // Suporte também para o caso em que os parâmetros vêm na âncora (#/invite?room=...)
+    if ((roomId == null || roomId.isEmpty) && uri.fragment.isNotEmpty) {
+      try {
+        final synthetic = Uri.parse(
+          'https://fragment${uri.fragment.startsWith('/') ? '' : '/'}${uri.fragment}',
+        );
+        roomId = synthetic.queryParameters['room'];
+      } catch (_) {
+        // ignora erros de parse
+      }
+    }
+
+    // Se não houver convite explícito, ainda assim podemos sugerir o app no mobile web
+    if (roomId == null || roomId.isEmpty) {
+      _maybeShowAppSuggestionWithoutInvite();
+      return;
+    }
+
+    _hasHandledInvite = true;
+
+    // Se houver link de convite (room), não mostramos o modal de sugestão.
+    // Deixamos o usuário seguir o fluxo normal de convite no site.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _showInviteDialog(roomId!);
+    });
+  }
+
+  bool _isMobileLayout(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    // Heurística simples: telas estreitas são tratadas como "mobile"
+    return size.width < 700;
+  }
+
+  void _maybeShowAppSuggestionWithoutInvite() {
+    if (!kIsWeb || _hasShownAppSuggestion) {
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!_isMobileLayout(context)) return;
+      _showAppSuggestionDialog();
+    });
+  }
+
+  Future<void> _showAppSuggestionDialog({String? roomId}) async {
+    if (_hasShownAppSuggestion) return;
+    _hasShownAppSuggestion = true;
+
+    final hasInvite = roomId != null && roomId.isNotEmpty;
+
+    final result = await showDialog<_AppSuggestionResult>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(hasInvite ? 'Abra no app' : 'Melhor no app'),
+          content: Text(
+            hasInvite
+                ? 'Você está acessando do celular e recebeu um convite para grupo. '
+                    'A experiência é melhor no app. O que você prefere fazer?'
+                : 'Você está acessando do celular. A experiência do Uatizapi é melhor no app. '
+                    'Como você prefere continuar?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(_AppSuggestionResult.stayOnWeb),
+              child: const Text('Continuar no site'),
+            ),
+            ElevatedButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(_AppSuggestionResult.goToApp),
+              child: const Text('Ir para o app'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted || result == null) return;
+
+    if (result == _AppSuggestionResult.goToApp) {
+      await _openNativeApp();
+      return;
+    }
+
+    // Se o usuário escolheu ficar no site e há um convite, seguimos com o fluxo atual
+    if (hasInvite) {
+      await _showInviteDialog(roomId);
+    }
+  }
+
+  Future<void> _openNativeApp() async {
+    // URL scheme do app. Será tratado pelos intent-filters (Android) e URL Types (iOS).
+    const appUrl = 'zapizapi://';
+    final uri = Uri.parse(appUrl);
+
+    try {
+      final canOpen = await canLaunchUrl(uri);
+      if (!canOpen) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Não foi possível abrir o app. Verifique se ele está instalado no seu dispositivo.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Ocorreu um erro ao tentar abrir o app.'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _showInviteDialog(String roomId) async {
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Convite para grupo'),
+          content: const Text('Você recebeu um convite. Deseja entrar neste grupo?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Agora não'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Entrar no grupo'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result == true) {
+      await _acceptGroupInvite(roomId);
+    }
+  }
+
+  Future<void> _acceptGroupInvite(String roomId) async {
+    final currentUser = Supabase.instance.client.auth.currentUser;
+    if (currentUser == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Faça login para entrar em um grupo.'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      // Busca informações básicas do grupo
+      final room = await Supabase.instance.client
+          .from('rooms')
+          .select('id, name')
+          .eq('id', roomId)
+          .maybeSingle();
+
+      if (room == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Convite inválido ou grupo não encontrado.'),
+          ),
+        );
+        return;
+      }
+
+      final name = (room['name'] as String?)?.trim() ?? 'Grupo';
+
+      // Garante que o usuário seja membro do grupo
+      final existing = await Supabase.instance.client
+          .from('room_members')
+          .select('room_id')
+          .eq('room_id', roomId)
+          .eq('user_id', currentUser.id)
+          .maybeSingle();
+
+      if (existing == null) {
+        await Supabase.instance.client.from('room_members').insert({
+          'room_id': roomId,
+          'user_id': currentUser.id,
+        });
+      }
+
+      setState(() {
+        _selectedRoomId = roomId;
+        _selectedRoomData = SidebarRoomData(
+          id: roomId,
+          title: name,
+          subtitle: '',
+          isDirect: false,
+        );
+        _sidebarReloadKey++;
+      });
+
+      // Em layout mobile abrimos a tela de chat dedicada, assim como em _SearchGroupsScreen
+      final size = MediaQuery.of(context).size;
+      final isMobile = size.width < 700;
+      if (isMobile) {
+        // ignore: use_build_context_synchronously
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => _MobileChatScreen(
+              title: name,
+              roomId: roomId,
+              roomData: _selectedRoomData,
+              textController: _textController,
+              inputFocus: _inputFocus,
+            ),
+          ),
+        );
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Você entrou no grupo "$name".'),
+        ),
+      );
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro ao entrar no grupo: ${e.message}'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro inesperado ao entrar no grupo: $e'),
+        ),
+      );
     }
   }
 
@@ -140,6 +410,7 @@ class _HomeScreenState extends State<HomeScreen>
       ),
       body: SafeArea(
         child: OpenConversationsSidebar(
+          key: ValueKey(_sidebarReloadKey),
           width: double.infinity,
           selectedRoomId: _selectedRoomId,
           onCreateNewConversation: () async {
@@ -285,6 +556,12 @@ class _HomeScreenState extends State<HomeScreen>
                                 });
                                 _inputFocus.requestFocus();
                               },
+                              onDeleteRequested: (message) {
+                                _confirmAndDeleteMessageForAll(
+                                  context: context,
+                                  message: message,
+                                );
+                              },
                               // Em qualquer tipo de sala (direta ou grupo),
                               // exibe o indicador visual de digitação quando
                               // algum outro usuário estiver digitando.
@@ -328,6 +605,7 @@ class _HomeScreenState extends State<HomeScreen>
                         bottom: 24,
                       ),
                       child: OpenConversationsSidebar(
+                        key: ValueKey(_sidebarReloadKey),
                         selectedRoomId: _selectedRoomId,
                         onCreateNewConversation: _showNewConversationDialog,
                         onRoomSelected: (room) {
@@ -1143,13 +1421,13 @@ class _GroupDetailsSheetState extends State<_GroupDetailsSheet> {
 
   Future<void> _copyInviteLink() async {
     // TODO: Ajuste o domínio/base do link conforme o ambiente da aplicação.
-    final inviteLink = 'https://zapizapi.app/invite?room=${widget.roomId}';
+    final inviteLink = '${dotenv.env['BASE_URL']}/invite?room=${widget.roomId}';
     await Clipboard.setData(ClipboardData(text: inviteLink));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Link de convite copiado.')),
     );
-  }
+  } 
 
   Future<void> _addMember() async {
     final emailController = TextEditingController();
@@ -1541,6 +1819,7 @@ class ChatComponent extends StatefulWidget {
     required this.roomId,
     this.onReplyRequested,
     this.onEditRequested,
+    this.onDeleteRequested,
     this.onMessageTap,
     this.onMessageLongPress,
     this.selectedMessageId,
@@ -1554,6 +1833,8 @@ class ChatComponent extends StatefulWidget {
   final ValueChanged<Map<String, dynamic>>? onReplyRequested;
   /// Callback ao pedir edição de uma mensagem.
   final ValueChanged<Map<String, dynamic>>? onEditRequested;
+  /// Callback ao pedir remoção definitiva da mensagem para todos.
+  final ValueChanged<Map<String, dynamic>>? onDeleteRequested;
   /// Callback ao tocar na mensagem (para alternar seleção, etc.)
   final ValueChanged<Map<String, dynamic>>? onMessageTap;
   /// Callback para long press (mobile) para selecionar a mensagem e mostrar ações no header.
@@ -1778,13 +2059,14 @@ class _ChatComponentState extends State<ChatComponent> {
                   if (extra == 1 && index == messages.length) {
                     return const _TypingMessageBubble();
                   }
-                  final message = messages[index];
-                  final isMine = message['from_id'] == currentUserId;
-                  final content = message['content'] as String? ?? '';
-                  final author = message['from_name'] as String? ?? 'Sem nome';
-                  final messageId = message['id'] as String?;
-                  final parentId = message['parent_id'] as String?;
-                  final editedAt = message['edited_at'];
+          final message = messages[index];
+          final isMine = message['from_id'] == currentUserId;
+          final content = message['content'] as String? ?? '';
+          final author = message['from_name'] as String? ?? 'Sem nome';
+          final messageId = message['id'] as String?;
+          final parentId = message['parent_id'] as String?;
+          final editedAt = message['edited_at'];
+          final isDeleted = (message['is_deleted'] as bool?) ?? false;
 
                   // Regra de edição: somente o autor pode editar e apenas até 15 minutos após o envio
                   final createdAtRaw = message['created_at'];
@@ -1819,7 +2101,7 @@ class _ChatComponentState extends State<ChatComponent> {
                     });
                   }
                   const double menuSpacing = 8;
-                  final menuOffset = ((messageId != null
+          final menuOffset = ((messageId != null
                               ? _bubbleWidthByMessageId[messageId]
                               : null) ??
                           0) +
@@ -1829,59 +2111,61 @@ class _ChatComponentState extends State<ChatComponent> {
                       ? (countsByMessage[messageId] ?? const <String, int>{})
                       : const <String, int>{};
 
-                  Widget? replyPreview;
-                  if (parentId != null && byId.containsKey(parentId)) {
-                    final parent = byId[parentId]!;
-                    final parentAuthor =
-                        (parent['from_name'] as String?) ?? 'Sem nome';
-                    final parentContent = (parent['content'] as String?) ?? '';
-                    replyPreview = Container(
-                      margin: const EdgeInsets.only(bottom: 6),
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                      decoration: BoxDecoration(
-                        color:
-                            scheme.surfaceContainerHighest.withOpacity(0.35),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 3,
-                            height: 28,
-                            margin: const EdgeInsets.only(right: 8),
-                            decoration: BoxDecoration(
-                              color: scheme.primary,
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
-                          Flexible(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Em resposta a $parentAuthor',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .labelSmall
-                                      ?.copyWith(fontWeight: FontWeight.w600),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                Text(
-                                  parentContent,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style:
-                                      Theme.of(context).textTheme.bodySmall,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
+          Widget? replyPreview;
+          if (!isDeleted &&
+              parentId != null &&
+              byId.containsKey(parentId)) {
+            final parent = byId[parentId]!;
+            final parentAuthor =
+                (parent['from_name'] as String?) ?? 'Sem nome';
+            final parentContent = (parent['content'] as String?) ?? '';
+            replyPreview = Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                color:
+                    scheme.surfaceContainerHighest.withOpacity(0.35),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 3,
+                    height: 28,
+                    margin: const EdgeInsets.only(right: 8),
+                    decoration: BoxDecoration(
+                      color: scheme.primary,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  Flexible(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Em resposta a $parentAuthor',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall
+                              ?.copyWith(fontWeight: FontWeight.w600),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          parentContent,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }
 
                   return Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
@@ -1926,178 +2210,206 @@ class _ChatComponentState extends State<ChatComponent> {
                                   }
                                 },
                                 onLongPress: () {
-                                  if (widget.onMessageLongPress != null) {
+                                  if (!isDeleted &&
+                                      widget.onMessageLongPress != null) {
                                     widget.onMessageLongPress!(message);
                                   }
                                 },
                                 child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    color: isMine
-                                        ? scheme.primaryContainer
-                                        : scheme.surface,
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: isSelected
-                                          ? scheme.primary
-                                          : (isMine
-                                              ? Colors.transparent
-                                              : scheme.outlineVariant),
-                                      width: isSelected ? 2 : 1,
+                                    decoration: BoxDecoration(
+                                      color: isMine
+                                          ? scheme.primaryContainer
+                                          : scheme.surface,
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: isSelected
+                                            ? scheme.primary
+                                            : (isMine
+                                                ? Colors.transparent
+                                                : scheme.outlineVariant),
+                                        width: isSelected ? 2 : 1,
+                                      ),
+                                      boxShadow: isSelected
+                                          ? [
+                                              BoxShadow(
+                                                color: scheme.primary
+                                                    .withOpacity(0.18),
+                                                blurRadius: 10,
+                                                offset: const Offset(0, 3),
+                                              ),
+                                            ]
+                                          : const [],
                                     ),
-                                    boxShadow: isSelected
-                                        ? [
-                                            BoxShadow(
-                                              color: scheme.primary
-                                                  .withOpacity(0.18),
-                                              blurRadius: 10,
-                                              offset: const Offset(0, 3),
-                                            ),
-                                          ]
-                                        : const [],
-                                  ),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(10),
-                                    child: Column(
-                                      crossAxisAlignment: isMine
-                                          ? CrossAxisAlignment.end
-                                          : CrossAxisAlignment.start,
-                                      children: [
-                                        if (!isMine)
-                                          Text(
-                                            author,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .labelMedium
-                                                ?.copyWith(
-                                                    fontWeight: FontWeight.w600),
-                                          ),
-                                        ?replyPreview,
-                                        if (_isImageUrl(content))
-                                          _MessageImage(
-                                            url: content,
-                                            onTap: () => _openImageViewer(
-                                                context, content),
-                                          )
-                                        else if (_isUrl(content))
-                                          InkWell(
-                                            onTap: () => _openUrl(content),
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                const Icon(
-                                                  Icons.attach_file,
-                                                  size: 18,
-                                                ),
-                                                const SizedBox(width: 6),
-                                                Flexible(
-                                                  child: Text(
-                                                    _fileNameFromUrl(content),
-                                                    style: Theme.of(context)
-                                                        .textTheme
-                                                        .bodyMedium
-                                                        ?.copyWith(
-                                                            decoration:
-                                                                TextDecoration
-                                                                    .underline),
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                    maxLines: 2,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          )
-                                        else
-                                          Text(
-                                            content,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodyMedium,
-                                          ),
-                                        if (editedAt != null)
-                                          Padding(
-                                            padding:
-                                                const EdgeInsets.only(top: 6),
-                                            child: Text(
-                                              '(editada)',
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(10),
+                                      child: Column(
+                                        crossAxisAlignment: isMine
+                                            ? CrossAxisAlignment.end
+                                            : CrossAxisAlignment.start,
+                                        children: [
+                                          if (!isMine)
+                                            Text(
+                                              author,
                                               style: Theme.of(context)
                                                   .textTheme
-                                                  .labelSmall,
+                                                  .labelMedium
+                                                  ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w600),
                                             ),
-                                          ),
-                                        if (messageId != null &&
-                                            counts.isNotEmpty)
-                                          Padding(
-                                            padding:
-                                                const EdgeInsets.only(top: 4),
-                                            child: Wrap(
-                                              spacing: 6,
-                                              runSpacing: 4,
-                                              children: counts.entries.map((e) {
-                                                final emoji = e.key;
-                                                final total = e.value;
-                                                final reacted = myReactsKey
-                                                    .contains('$messageId|$emoji');
-                                                return InkWell(
-                                                  onTap: () => _toggleReaction(
-                                                    messageId,
-                                                    roomId,
-                                                    emoji,
+                                          ?replyPreview,
+                                          if (isDeleted)
+                                            Text(
+                                              'Mensagem apagada',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    fontStyle: FontStyle.italic,
+                                                    color: Theme.of(context)
+                                                        .textTheme
+                                                        .bodySmall
+                                                        ?.color
+                                                        ?.withOpacity(0.7),
                                                   ),
-                                                  borderRadius:
-                                                      const BorderRadius.all(
-                                                          Radius.circular(999)),
-                                                  child: Container(
-                                                    padding:
-                                                        const EdgeInsets.symmetric(
-                                                      horizontal: 8,
-                                                      vertical: 4,
+                                            )
+                                          else if (_isImageUrl(content))
+                                            _MessageImage(
+                                              url: content,
+                                              onTap: () => _openImageViewer(
+                                                  context, content),
+                                            )
+                                          else if (_isUrl(content))
+                                            InkWell(
+                                              onTap: () => _openUrl(content),
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  const Icon(
+                                                    Icons.attach_file,
+                                                    size: 18,
+                                                  ),
+                                                  const SizedBox(width: 6),
+                                                  Flexible(
+                                                    child: Text(
+                                                      _fileNameFromUrl(content),
+                                                      style: Theme.of(context)
+                                                          .textTheme
+                                                          .bodyMedium
+                                                          ?.copyWith(
+                                                              decoration:
+                                                                  TextDecoration
+                                                                      .underline),
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      maxLines: 2,
                                                     ),
-                                                    decoration: BoxDecoration(
-                                                      color: reacted
-                                                          ? scheme.primary
-                                                              .withOpacity(0.25)
-                                                          : scheme
-                                                              .surfaceContainerHighest
-                                                              .withOpacity(0.4),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              999),
-                                                      border: Border.all(
+                                                  ),
+                                                ],
+                                              ),
+                                            )
+                                          else
+                                            Text(
+                                              content,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodyMedium,
+                                            ),
+                                          if (!isDeleted && editedAt != null)
+                                            Padding(
+                                              padding:
+                                                  const EdgeInsets.only(top: 6),
+                                              child: Text(
+                                                '(editada)',
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .labelSmall,
+                                              ),
+                                            ),
+                                          if (!isDeleted &&
+                                              messageId != null &&
+                                              counts.isNotEmpty)
+                                            Padding(
+                                              padding:
+                                                  const EdgeInsets.only(top: 4),
+                                              child: Wrap(
+                                                spacing: 6,
+                                                runSpacing: 4,
+                                                children:
+                                                    counts.entries.map((e) {
+                                                  final emoji = e.key;
+                                                  final total = e.value;
+                                                  final reacted = myReactsKey
+                                                      .contains(
+                                                          '$messageId|$emoji');
+                                                  return InkWell(
+                                                    onTap: () =>
+                                                        _toggleReaction(
+                                                      messageId,
+                                                      roomId,
+                                                      emoji,
+                                                    ),
+                                                    borderRadius:
+                                                        const BorderRadius.all(
+                                                            Radius.circular(
+                                                                999)),
+                                                    child: Container(
+                                                      padding:
+                                                          const EdgeInsets
+                                                              .symmetric(
+                                                        horizontal: 8,
+                                                        vertical: 4,
+                                                      ),
+                                                      decoration: BoxDecoration(
                                                         color: reacted
                                                             ? scheme.primary
+                                                                .withOpacity(
+                                                                    0.25)
                                                             : scheme
-                                                                .outlineVariant,
+                                                                .surfaceContainerHighest
+                                                                .withOpacity(
+                                                                    0.4),
+                                                        borderRadius:
+                                                            BorderRadius
+                                                                .circular(999),
+                                                        border: Border.all(
+                                                          color: reacted
+                                                              ? scheme.primary
+                                                              : scheme
+                                                                  .outlineVariant,
+                                                        ),
+                                                      ),
+                                                      child: Row(
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
+                                                        children: [
+                                                          Text(emoji),
+                                                          const SizedBox(
+                                                              width: 4),
+                                                          Text(
+                                                            '$total',
+                                                            style: Theme.of(
+                                                                    context)
+                                                                .textTheme
+                                                                .labelSmall,
+                                                          ),
+                                                        ],
                                                       ),
                                                     ),
-                                                    child: Row(
-                                                      mainAxisSize:
-                                                          MainAxisSize.min,
-                                                      children: [
-                                                        Text(emoji),
-                                                        const SizedBox(width: 4),
-                                                        Text(
-                                                          '$total',
-                                                          style: Theme.of(context)
-                                                              .textTheme
-                                                              .labelSmall,
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  ),
-                                                );
-                                              }).toList(),
+                                                  );
+                                                }).toList(),
+                                              ),
                                             ),
-                                          ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
                                   ),
-                                ),
                                 ),
                                 ),
                               ),
-                               if (_hoveredMessageId == messageId ||
-                                   _activeMenuMessageId == messageId)
+                               if (!isDeleted &&
+                                   (_hoveredMessageId == messageId ||
+                                       _activeMenuMessageId == messageId))
                                  Positioned(
                                    top: 0,
                                    bottom: 0,
@@ -2140,6 +2452,9 @@ class _ChatComponentState extends State<ChatComponent> {
                                                messageId != null) {
                                              _showEmojiPicker(
                                                  context, messageId, roomId);
+                                          } else if (value == 'delete') {
+                                            widget.onDeleteRequested
+                                                ?.call(message);
                                            }
                                            if (_activeMenuMessageId != null) {
                                              setState(() {
@@ -2168,6 +2483,15 @@ class _ChatComponentState extends State<ChatComponent> {
                                                  child: Text('Editar'),
                                                ),
                                              );
+                                            }
+                                            if (isMine) {
+                                              entries.add(
+                                                const PopupMenuItem<String>(
+                                                  value: 'delete',
+                                                  child:
+                                                      Text('Apagar para todos'),
+                                                ),
+                                              );
                                            }
                                            return entries;
                                          },
@@ -3575,7 +3899,7 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
         ),
         actions: [
           if (_selectedMessage != null) ...[
-          IconButton(
+            IconButton(
               tooltip: 'Responder',
               icon: const Icon(Icons.reply),
               onPressed: () {
@@ -3633,6 +3957,22 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
                 },
               ),
             IconButton(
+              tooltip: 'Apagar para todos',
+              icon: const Icon(Icons.delete_outline),
+              onPressed: () async {
+                final m = _selectedMessage!;
+                final deleted = await _confirmAndDeleteMessageForAll(
+                  context: context,
+                  message: m,
+                );
+                if (deleted && mounted) {
+                  setState(() {
+                    _selectedMessage = null;
+                  });
+                }
+              },
+            ),
+            IconButton(
               tooltip: 'Reagir',
               icon: const Icon(Icons.emoji_emotions_outlined),
               onPressed: () {
@@ -3689,6 +4029,12 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
                   );
                 });
                 widget.inputFocus.requestFocus();
+              },
+              onDeleteRequested: (message) {
+                _confirmAndDeleteMessageForAll(
+                  context: context,
+                  message: message,
+                );
               },
               onMessageTap: (message) {
                 final current = _selectedMessage;
@@ -3902,4 +4248,92 @@ class _SearchGroupsScreenState extends State<_SearchGroupsScreen> {
       ),
     );
   }
+}
+
+/// Exibe um modal de confirmação e marca a mensagem como apagada para todos.
+///
+/// Retorna `true` se a mensagem foi efetivamente apagada.
+Future<bool> _confirmAndDeleteMessageForAll({
+  required BuildContext context,
+  required Map<String, dynamic> message,
+}) async {
+  final messageId = message['id'] as String?;
+  if (messageId == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Não foi possível identificar a mensagem.'),
+      ),
+    );
+    return false;
+  }
+
+  final currentUser = Supabase.instance.client.auth.currentUser;
+  if (currentUser == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Usuário não autenticado.'),
+      ),
+    );
+    return false;
+  }
+
+  final bool? confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) {
+      return AlertDialog(
+        title: const Text('Apagar mensagem'),
+        content: const Text(
+          'Deseja apagar esta mensagem para todos? Essa ação não pode ser desfeita.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Apagar'),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (confirmed != true) {
+    return false;
+  }
+
+  try {
+    await Supabase.instance.client
+        .from('messages')
+        .update({'is_deleted': true})
+        .eq('id', messageId)
+        .eq('from_id', currentUser.id);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Mensagem apagada para todos.'),
+      ),
+    );
+    return true;
+  } on PostgrestException catch (error) {
+    var userMessage = 'Erro ao apagar mensagem: ${error.message}';
+    final messageText = error.message.toLowerCase();
+    if (error.code == '42501' ||
+        messageText.contains('row-level security')) {
+      userMessage = 'Você não tem permissão para apagar esta mensagem.';
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(userMessage)),
+    );
+  } catch (error) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Erro inesperado ao apagar mensagem: $error',
+        ),
+      ),
+    );
+  }
+  return false;
 }

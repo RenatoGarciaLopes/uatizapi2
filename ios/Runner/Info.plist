@@ -45,5 +45,17 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- URL scheme para permitir abrir o app via zapizapi:// -->
+	<key>CFBundleURLTypes</key>
+	<Array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>zapizapi</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>zapizapi</string>
+			</array>
+		</dict>
+	</Array>
 </dict>
 </plist>

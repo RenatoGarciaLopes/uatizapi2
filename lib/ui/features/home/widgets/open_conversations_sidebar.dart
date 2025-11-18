@@ -651,12 +651,10 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
           roomIds.length == _knownRoomIds.length &&
           roomIds.containsAll(_knownRoomIds);
 
-      if (hasSameRooms && _cachedRooms.isNotEmpty) {
-        if (_isFetchingRooms) {
-          setState(() {
-            _isFetchingRooms = false;
-          });
-        }
+      // Evita disparar várias requisições para o mesmo conjunto de salas.
+      // Se já estamos buscando (_isFetchingRooms) ou já temos cache para esse
+      // mesmo conjunto de rooms, não iniciamos uma nova chamada.
+      if (hasSameRooms && (_isFetchingRooms || _cachedRooms.isNotEmpty)) {
         return;
       }
 
