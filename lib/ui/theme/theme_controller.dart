@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// Controlador de tema
 class ThemeController extends ChangeNotifier {
   ThemeController._({ThemeMode initialMode = ThemeMode.light})
       : _mode = initialMode;
@@ -78,7 +79,9 @@ class ThemeController extends ChangeNotifier {
   }
 }
 
-class ThemeControllerProvider extends InheritedWidget {
+/// Provedor de ThemeController
+class ThemeControllerProvider e\xtends InheritedWidget {
+  /// Construtor da classe [ThemeControllerProvider]
   const ThemeControllerProvider({
     required this.controller,
     required super.child,
