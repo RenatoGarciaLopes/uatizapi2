@@ -1,34 +1,64 @@
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:zapizapi/ui/features/home/home_screen.dart';
-import 'package:zapizapi/ui/features/login/login_screen.dart';
+import 'package:zapizapi/services/notification_service.dart';
 import 'package:zapizapi/ui/features/forgot_password/forgot_password_screen.dart';
 import 'package:zapizapi/ui/features/forgot_password/reset_password_screen.dart';
+import 'package:zapizapi/ui/features/home/home_screen.dart';
+import 'package:zapizapi/ui/features/login/login_screen.dart';
 import 'package:zapizapi/ui/features/register/register_screen.dart';
 import 'package:zapizapi/ui/theme/theme_controller.dart';
 import 'package:zapizapi/utils/routes_enum.dart';
+import 'package:zapizapi/firebase_options.dart';
 
 // TODO: Implementar change notifier na main e injetar gerenciamento de estado
 // no register screen
 // TODO: Integrar login screen com gerenciamento de sessão
 
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // Necessário para mensagens em segundo plano.
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+}
+
 Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Inicializa Firebase / FCM
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
   await dotenv.load();
   await Supabase.initialize(
     url: dotenv.env['SUPABASE_URL'] ?? '',
     anonKey: dotenv.env['SUPABASE_KEY'] ?? '',
-    authOptions: const FlutterAuthClientOptions(
-      authFlowType: AuthFlowType.pkce,
-    ),
   );
+
+  // Inicializa o serviço de notificações (permissões + token)
+  await NotificationService.instance.init();
+
+  // Verifica se há uma sessão ativa do Supabase
+  final supabase = Supabase.instance.client;
+  final session = supabase.auth.currentSession;
+  
   // Decide rota inicial no WEB se houver ?code=... (recuperação)
-  String initialRoute = RoutesEnum.login.route;
-  if (kIsWeb) {
+  var initialRoute = RoutesEnum.login.route;
+  
+  // Se houver sessão ativa, redireciona para home
+  if (session != null) {
+    initialRoute = RoutesEnum.home.route;
+  } else if (kIsWeb) {
     final uri = Uri.base;
-    String? code = uri.queryParameters['code'];
+    final params = uri.queryParameters;
+    var code = params['code'];
+    final type = params['type']; // ex.: recovery | signup | email_change
     if (code == null || code.isEmpty) {
       final fragment = uri.fragment; // ex.: /login?code=...
       if (fragment.isNotEmpty) {
@@ -41,13 +71,24 @@ Future<void> main() async {
       }
     }
     if (code != null && code.isNotEmpty) {
-      // Usa a API web para ler a sessão do callback (PKCE)
-      try {
-        await Supabase.instance.client.auth.getSessionFromUrl(uri);
-      } catch (_) {
-        // segue para tela de reset mesmo sem sessão para feedback
+      // Diferencia recuperação de senha de confirmação de e-mail
+      if (type == 'recovery') {
+        // Recuperação de senha -> tela de reset
+        try {
+          await Supabase.instance.client.auth.getSessionFromUrl(uri);
+        } catch (_) {
+          // segue para tela de reset mesmo sem sessão para feedback
+        }
+        initialRoute = RoutesEnum.resetPassword.route;
+      } else {
+        // Confirmação de e-mail (signup/email_change) -> volta ao login
+        try {
+          await Supabase.instance.client.auth.getSessionFromUrl(uri);
+        } catch (_) {
+          // sem problemas se não criar sessão
+        }
+        initialRoute = RoutesEnum.login.route;
       }
-      initialRoute = RoutesEnum.resetPassword.route;
     }
   }
   runApp(MainApp(initialRoute: initialRoute));
@@ -66,12 +107,15 @@ class MainApp extends StatefulWidget {
 }
 
 class _MainAppState extends State<MainApp> {
-  final ThemeController _themeController = ThemeController();
+  late final ThemeController _themeController;
   late final Stream<AuthState> _authSub;
+  bool _isThemeLoaded = false;
 
   @override
   void initState() {
     super.initState();
+    _initializeTheme();
+    
     // Escuta eventos de autenticação para detectar recuperação de senha
     _authSub = Supabase.instance.client.auth.onAuthStateChange;
     _authSub.listen((state) {
@@ -82,6 +126,20 @@ class _MainAppState extends State<MainApp> {
           if (!mounted) return;
           Navigator.of(context).pushNamed(RoutesEnum.resetPassword.route);
         });
+      } else if (event == AuthChangeEvent.signedIn) {
+        // Usuário autenticado (ex.: confirmação por link/magic link) -> home
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          Navigator.of(context)
+              .pushNamedAndRemoveUntil(RoutesEnum.home.route, (_) => false);
+        });
+      } else if (event == AuthChangeEvent.signedOut) {
+        // Usuário deslogado -> login
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          Navigator.of(context)
+              .pushNamedAndRemoveUntil(RoutesEnum.login.route, (_) => false);
+        });
       }
     });
 
@@ -89,8 +147,30 @@ class _MainAppState extends State<MainApp> {
     // getSessionFromUrl(Uri.base) quando necessário.
   }
 
+  /// Inicializa o tema carregando as preferências salvas
+  Future<void> _initializeTheme() async {
+    _themeController = await ThemeController.create();
+    if (mounted) {
+      setState(() {
+        _isThemeLoaded = true;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Aguarda o tema ser carregado antes de construir o MaterialApp
+    if (!_isThemeLoaded) {
+      return const MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          body: Center(
+            child: CircularProgressIndicator(),
+          ),
+        ),
+      );
+    }
+
     return ThemeControllerProvider(
       controller: _themeController,
       child: AnimatedBuilder(
@@ -178,7 +258,7 @@ class _MainAppState extends State<MainApp> {
               ),
             ),
             routes: {
-              RoutesEnum.login.route: (context) => LoginScreen(),
+              RoutesEnum.login.route: (context) => const LoginScreen(),
               RoutesEnum.forgotPassword.route: (context) =>
                   const ForgotPasswordScreen(),
               RoutesEnum.resetPassword.route: (context) =>

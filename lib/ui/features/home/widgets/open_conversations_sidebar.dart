@@ -351,16 +351,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      SvgPicture.asset(
-                        'assets/icons/ic-menu-dots-circle-broken.svg',
-                        width: 24,
-                        height: 24,
-                        colorFilter: ColorFilter.mode(
-                          scheme.onSurfaceVariant,
-                          BlendMode.srcIn,
-                        ),
-                      ),
+                     
                     ],
                   ),
                 ),
@@ -567,7 +558,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
     final rawRoomsResponse = await Supabase.instance.client
         .from('rooms')
         .select(
-          'id, name, type, updated_at, created_at',
+          'id, name, type, updated_at, created_at, avatar_url',
         )
         .filter('id', 'in', idsFilter);
 
@@ -625,6 +616,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
       } else {
         title = name?.isNotEmpty ?? false ? name! : 'Grupo';
         subtitle = '${relatedMembers.length} participante(s)';
+        avatarUrl = (room['avatar_url'] as String?)?.trim();
       }
 
       rooms.add(
@@ -633,7 +625,7 @@ class _OpenConversationsSidebarState extends State<OpenConversationsSidebar> {
           title: title,
           subtitle: subtitle,
           isDirect: type == 'direct',
-          avatarUrl: type == 'direct' ? avatarUrl : null,
+          avatarUrl: avatarUrl,
         ),
       );
     }
@@ -742,7 +734,28 @@ class _SidebarAvatar extends StatelessWidget {
         ? scheme.onPrimary
         : scheme.onSecondaryContainer;
 
+    final avatarUrl = room.avatarUrl?.trim();
+
     if (!room.isDirect) {
+      if (avatarUrl != null && avatarUrl.isNotEmpty) {
+        return CircleAvatar(
+          backgroundColor: backgroundColor,
+          foregroundColor: foregroundColor,
+          child: ClipOval(
+            child: Image.network(
+              avatarUrl,
+              width: 40,
+              height: 40,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Icon(
+                Icons.group_outlined,
+                color: foregroundColor,
+              ),
+            ),
+          ),
+        );
+      }
+
       return CircleAvatar(
         backgroundColor: backgroundColor,
         child: Icon(
@@ -751,8 +764,6 @@ class _SidebarAvatar extends StatelessWidget {
         ),
       );
     }
-
-    final avatarUrl = room.avatarUrl?.trim();
 
     if (avatarUrl != null && avatarUrl.isNotEmpty) {
       return CircleAvatar(

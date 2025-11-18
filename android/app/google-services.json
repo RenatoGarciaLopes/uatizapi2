@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1094783952092",
+    "project_id": "uatizapi2-ded6f",
+    "storage_bucket": "uatizapi2-ded6f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1094783952092:android:0f886fa91a9143f8208019",
+        "android_client_info": {
+          "package_name": "com.example.zapizapi"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBkYSxY098CLEl4F-h8lGzdvv4qlQGSNVo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

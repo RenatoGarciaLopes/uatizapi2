@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:zapizapi/services/attachment_service.dart';
+import 'package:zapizapi/services/avatar_service.dart';
 import 'package:zapizapi/ui/widgets/image_viewer.dart';
 import 'package:zapizapi/repositories/profile_repository_implementation.dart';
 import 'package:zapizapi/repositories/room_repository_implementation.dart';
@@ -28,8 +29,9 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final TextEditingController _textController = TextEditingController();
+  final FocusNode _inputFocus = FocusNode();
   String? _selectedRoomId;
   SidebarRoomData? _selectedRoomData;
   Map<String, dynamic>? _replyTargetMessage;
@@ -48,6 +50,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _introController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 550),
@@ -72,11 +75,29 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _typingResetTimer?.cancel();
     _roomChannel?.unsubscribe();
     _globalPresenceChannel?.unsubscribe();
     _introController.dispose();
+    _inputFocus.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      // App voltou para o primeiro plano: volta a marcar presença global
+      _subscribeGlobalPresence();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      // App foi para segundo plano / ficou inativo: remove presença global
+      _globalPresenceChannel?.unsubscribe();
+      _globalPresenceChannel = null;
+      setState(_onlineUserIds.clear);
+    }
   }
 
   @override
@@ -136,6 +157,7 @@ class _HomeScreenState extends State<HomeScreen>
                   roomId: room.id,
                   roomData: room,
                   textController: _textController,
+                  inputFocus: _inputFocus,
                 ),
               ),
             );
@@ -249,6 +271,7 @@ class _HomeScreenState extends State<HomeScreen>
                                   _editingMessage = null;
                                   _replyTargetMessage = message;
                                 });
+                                _inputFocus.requestFocus();
                               },
                               onEditRequested: (message) {
                                 setState(() {
@@ -260,9 +283,10 @@ class _HomeScreenState extends State<HomeScreen>
                                       TextSelection.collapsed(
                                           offset: _textController.text.length);
                                 });
+                                _inputFocus.requestFocus();
                               },
                               showTypingIndicator:
-                                  (_selectedRoomData?.isDirect == true) &&
+                                  (_selectedRoomData?.isDirect ?? false) &&
                                       _isPeerTyping,
                             ),
                             InputComponent(
@@ -270,6 +294,7 @@ class _HomeScreenState extends State<HomeScreen>
                               roomId: _selectedRoomId,
                               replyToMessage: _replyTargetMessage,
                               editMessage: _editingMessage,
+                              focusNode: _inputFocus,
                               onCancelReply: () {
                                 setState(() {
                                   _replyTargetMessage = null;
@@ -380,9 +405,26 @@ class _HomeScreenState extends State<HomeScreen>
       }
     }
 
+    final isGroup = !selectedRoom.isDirect;
+    final avatar = _buildHeaderAvatar(selectedRoom, headerForeground);
+
     return Row(
       children: [
-        _buildHeaderAvatar(selectedRoom, headerForeground),
+        if (isGroup)
+          InkWell(
+            onTap: () {
+              showGroupDetailsBottomSheet(
+                context,
+                roomId: selectedRoom.id,
+                roomName: selectedRoom.title,
+                avatarUrl: selectedRoom.avatarUrl,
+              );
+            },
+            customBorder: const CircleBorder(),
+            child: avatar,
+          )
+        else
+          avatar,
         const SizedBox(width: 12),
         Expanded(
           child: Column(
@@ -447,16 +489,36 @@ class _HomeScreenState extends State<HomeScreen>
           color: headerForeground,
         ),
       );
-    }
+    } else {
+      final avatarUrl = room.avatarUrl?.trim();
+      if (avatarUrl != null && avatarUrl.isNotEmpty) {
+        return CircleAvatar(
+          radius: 20,
+          backgroundColor: avatarBackground,
+          child: ClipOval(
+            child: Image.network(
+              avatarUrl,
+              width: 40,
+              height: 40,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Icon(
+                Icons.group_outlined,
+                color: headerForeground,
+              ),
+            ),
+          ),
+        );
+      }
 
-    return CircleAvatar(
-      radius: 20,
-      backgroundColor: avatarBackground,
-      child: Icon(
-        Icons.group_outlined,
-        color: headerForeground,
-      ),
-    );
+      return CircleAvatar(
+        radius: 20,
+        backgroundColor: avatarBackground,
+        child: Icon(
+          Icons.group_outlined,
+          color: headerForeground,
+        ),
+      );
+    }
   }
 
   Future<void> _showNewConversationDialog() async {
@@ -518,6 +580,7 @@ class _HomeScreenState extends State<HomeScreen>
                               roomId: roomId,
                               roomData: _selectedRoomData,
                               textController: _textController,
+                              inputFocus: _inputFocus,
                             ),
                           ),
                         );
@@ -895,7 +958,7 @@ class _HomeScreenState extends State<HomeScreen>
           if (isTyping) {
             _typingResetTimer = Timer(const Duration(milliseconds: 1500), () {
               if (mounted) {
-                if (_isPeerTyping != false) {
+                if (_isPeerTyping) {
                   setState(() {
                     _isPeerTyping = false;
                   });
@@ -998,12 +1061,475 @@ class _HomeScreenState extends State<HomeScreen>
     channel.subscribe((status, [ref]) async {
       if (status == RealtimeSubscribeStatus.subscribed) {
         final currentUserId = Supabase.instance.client.auth.currentUser?.id;
-        await channel.track({'user_id': currentUserId});
-        debugPrint('[presence][global] subscribed + tracked user_id=$currentUserId');
+        if (currentUserId != null) {
+          await channel.track({'user_id': currentUserId});
+          debugPrint(
+              '[presence][global] subscribed + tracked user_id=$currentUserId');
+        } else {
+          debugPrint(
+              '[presence][global] subscribed but no authenticated user to track');
+        }
         update();
       }
     });
     _globalPresenceChannel = channel;
+  }
+}
+
+/// Exibe um bottom sheet com detalhes do grupo: membros, link de convite e
+/// ações para adicionar pessoas e alterar a foto do grupo.
+Future<void> showGroupDetailsBottomSheet(
+  BuildContext context, {
+  required String roomId,
+  required String roomName,
+  String? avatarUrl,
+}) async {
+  await showModalBottomSheet<void>(
+    context: context,
+    useSafeArea: true,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (_) => _GroupDetailsSheet(
+      roomId: roomId,
+      roomName: roomName,
+      initialAvatarUrl: avatarUrl,
+    ),
+  );
+}
+
+class _GroupDetailsSheet extends StatefulWidget {
+  const _GroupDetailsSheet({
+    required this.roomId,
+    required this.roomName,
+    this.initialAvatarUrl,
+  });
+
+  final String roomId;
+  final String roomName;
+  final String? initialAvatarUrl;
+
+  @override
+  State<_GroupDetailsSheet> createState() => _GroupDetailsSheetState();
+}
+
+class _GroupDetailsSheetState extends State<_GroupDetailsSheet> {
+  late Future<List<Map<String, dynamic>>> _membersFuture;
+  String? _avatarUrl;
+  bool _isUpdatingAvatar = false;
+  bool _isAddingMember = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _avatarUrl = widget.initialAvatarUrl?.trim();
+    _membersFuture = _fetchMembers();
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchMembers() async {
+    final response = await Supabase.instance.client
+        .from('room_members')
+        .select(
+          'profiles ( full_name, email, avatar_url )',
+        )
+        .eq('room_id', widget.roomId);
+
+    final list = (response as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .toList() ??
+        const [];
+    return list;
+  }
+
+  Future<void> _copyInviteLink() async {
+    // TODO: Ajuste o domínio/base do link conforme o ambiente da aplicação.
+    final inviteLink = 'https://zapizapi.app/invite?room=${widget.roomId}';
+    await Clipboard.setData(ClipboardData(text: inviteLink));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Link de convite copiado.')),
+    );
+  }
+
+  Future<void> _addMember() async {
+    final emailController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Adicionar integrante'),
+              content: Form(
+                key: formKey,
+                child: TextFormField(
+                  controller: emailController,
+                  decoration: const InputDecoration(
+                    labelText: 'E-mail do integrante',
+                  ),
+                  keyboardType: TextInputType.emailAddress,
+                  validator: (value) {
+                    final email = value?.trim() ?? '';
+                    if (email.isEmpty) {
+                      return 'Informe o e-mail do integrante.';
+                    }
+                    if (!email.contains('@')) {
+                      return 'Informe um e-mail válido.';
+                    }
+                    return null;
+                  },
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: _isAddingMember
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  onPressed: _isAddingMember
+                      ? null
+                      : () async {
+                          if (!formKey.currentState!.validate()) {
+                            return;
+                          }
+                          final email = emailController.text.trim();
+                          if (email.isEmpty) return;
+
+                          setDialogState(() {
+                            _isAddingMember = true;
+                          });
+
+                          try {
+                            final profileRepository =
+                                ProfileRepositoryImplementation(
+                              profileService: ProfileService(),
+                            );
+                            final userId = await profileRepository
+                                .getUserIdByEmail(email);
+
+                            await Supabase.instance.client
+                                .from('room_members')
+                                .insert({
+                              'room_id': widget.roomId,
+                              'user_id': userId,
+                            });
+
+                            if (!mounted) return;
+                            setState(() {
+                              _membersFuture = _fetchMembers();
+                            });
+
+                            Navigator.of(dialogContext).pop();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Integrante adicionado com sucesso.',
+                                ),
+                              ),
+                            );
+                          } on PostgrestException catch (e) {
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Erro ao adicionar integrante: ${e.message}',
+                                ),
+                              ),
+                            );
+                          } catch (e) {
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Erro inesperado ao adicionar integrante: $e',
+                                ),
+                              ),
+                            );
+                          } finally {
+                            if (mounted) {
+                              setDialogState(() {
+                                _isAddingMember = false;
+                              });
+                            }
+                          }
+                        },
+                  child: _isAddingMember
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Adicionar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _changeGroupAvatar() async {
+    if (_isUpdatingAvatar) return;
+    setState(() {
+      _isUpdatingAvatar = true;
+    });
+    try {
+      final avatarService = AvatarService();
+      final upload = await avatarService.pickAndUploadGroupAvatar(
+        roomId: widget.roomId,
+      );
+      if (upload == null) {
+        setState(() {
+          _isUpdatingAvatar = false;
+        });
+        return;
+      }
+
+      await Supabase.instance.client
+          .from('rooms')
+          .update({'avatar_url': upload.url}).eq('id', widget.roomId);
+
+      if (!mounted) return;
+      setState(() {
+        _avatarUrl = upload.url;
+        _isUpdatingAvatar = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Foto do grupo atualizada.')),
+      );
+    } on AvatarServiceException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isUpdatingAvatar = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isUpdatingAvatar = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro ao salvar avatar do grupo: ${e.message}'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isUpdatingAvatar = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro inesperado ao atualizar avatar: $e'),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+
+    final avatarWidget = CircleAvatar(
+      radius: 40,
+      backgroundColor: scheme.secondaryContainer,
+      foregroundColor: scheme.onSecondaryContainer,
+      child: _avatarUrl != null && _avatarUrl!.isNotEmpty
+          ? ClipOval(
+              child: Image.network(
+                _avatarUrl!,
+                width: 80,
+                height: 80,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Icon(
+                  Icons.group_outlined,
+                  color: scheme.onSecondaryContainer,
+                  size: 40,
+                ),
+              ),
+            )
+          : Icon(
+              Icons.group_outlined,
+              color: scheme.onSecondaryContainer,
+              size: 40,
+            ),
+    );
+
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 16,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Stack(
+                alignment: Alignment.bottomRight,
+                children: [
+                  avatarWidget,
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: InkWell(
+                      onTap: _isUpdatingAvatar ? null : _changeGroupAvatar,
+                      customBorder: const CircleBorder(),
+                      child: CircleAvatar(
+                        radius: 14,
+                        backgroundColor: scheme.primary,
+                        foregroundColor: scheme.onPrimary,
+                        child: _isUpdatingAvatar
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.photo_camera_outlined,
+                                size: 16,
+                              ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.roomName,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'ID: ${widget.roomId.substring(0, 8)}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _copyInviteLink,
+                  icon: const Icon(Icons.link),
+                  label: const Text('Copiar convite'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _addMember,
+                  icon: const Icon(Icons.person_add_alt_1_outlined),
+                  label: const Text('Adicionar pessoa'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Integrantes',
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ConstrainedBox(
+            constraints: const BoxConstraints(
+              maxHeight: 360,
+            ),
+            child: FutureBuilder<List<Map<String, dynamic>>>(
+              future: _membersFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: CircularProgressIndicator(),
+                    ),
+                  );
+                }
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        'Erro ao carregar integrantes: ${snapshot.error}',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  );
+                }
+
+                final members = snapshot.data ?? const [];
+                if (members.isEmpty) {
+                  return const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text(
+                      'Nenhum integrante encontrado.',
+                      textAlign: TextAlign.center,
+                    ),
+                  );
+                }
+
+                return ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: members.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final item = members[index];
+                    final profile =
+                        item['profiles'] as Map<String, dynamic>? ?? {};
+                    final fullName =
+                        (profile['full_name'] as String?)?.trim() ?? '';
+                    final email =
+                        (profile['email'] as String?)?.trim() ?? '';
+                    final displayName = fullName.isNotEmpty
+                        ? fullName
+                        : (email.isNotEmpty
+                            ? email.split('@').first
+                            : 'Usuário');
+
+                    return ListTile(
+                      leading: const CircleAvatar(
+                        child: Icon(Icons.person_outline),
+                      ),
+                      title: Text(displayName),
+                      subtitle: email.isNotEmpty ? Text(email) : null,
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -1014,7 +1540,9 @@ class ChatComponent extends StatefulWidget {
     required this.roomId,
     this.onReplyRequested,
     this.onEditRequested,
+    this.onMessageTap,
     this.onMessageLongPress,
+    this.selectedMessageId,
     this.showTypingIndicator = false,
     super.key,
   });
@@ -1025,10 +1553,14 @@ class ChatComponent extends StatefulWidget {
   final ValueChanged<Map<String, dynamic>>? onReplyRequested;
   /// Callback ao pedir edição de uma mensagem.
   final ValueChanged<Map<String, dynamic>>? onEditRequested;
+  /// Callback ao tocar na mensagem (para alternar seleção, etc.)
+  final ValueChanged<Map<String, dynamic>>? onMessageTap;
   /// Callback para long press (mobile) para selecionar a mensagem e mostrar ações no header.
   final ValueChanged<Map<String, dynamic>>? onMessageLongPress;
   /// Exibe um item visual de "digitando..." no final da lista.
   final bool showTypingIndicator;
+  /// Id da mensagem selecionada (para feedback visual)
+  final String? selectedMessageId;
 
   @override
   State<ChatComponent> createState() => _ChatComponentState();
@@ -1040,8 +1572,11 @@ class _ChatComponentState extends State<ChatComponent> {
   Stream<List<Map<String, dynamic>>>? _messagesStream;
   Stream<List<Map<String, dynamic>>>? _reactionsStream;
   String? _hoveredMessageId;
+  final Map<String, double> _bubbleWidthByMessageId = {};
+  String? _activeMenuMessageId;
 
   bool _lastTypingVisible = false;
+  double _lastBottomInset = 0;
 
   @override
   void initState() {
@@ -1087,7 +1622,7 @@ class _ChatComponentState extends State<ChatComponent> {
     if (widget.showTypingIndicator != _lastTypingVisible) {
       _lastTypingVisible = widget.showTypingIndicator;
       if (_lastTypingVisible) {
-        _scheduleScrollToBottom(animated: true);
+        _scheduleScrollToBottom();
       }
     }
   }
@@ -1118,6 +1653,15 @@ class _ChatComponentState extends State<ChatComponent> {
 
   @override
   Widget build(BuildContext context) {
+    // Quando o teclado abre no mobile (viewInsets.bottom > 0),
+    // garantimos que a lista role até o final para que as últimas
+    // mensagens continuem visíveis.
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    if (bottomInset > 0 && bottomInset != _lastBottomInset) {
+      _scheduleScrollToBottom();
+    }
+    _lastBottomInset = bottomInset;
+
     final roomId = widget.roomId;
     if (roomId == null) {
       return const Expanded(
@@ -1157,7 +1701,7 @@ class _ChatComponentState extends State<ChatComponent> {
           }
 
           final scheme = Theme.of(context).colorScheme;
-          final Map<String, Map<String, dynamic>> byId = {
+          final byId = <String, Map<String, dynamic>>{
             for (final m in messages) (m['id'] as String): m
           };
 
@@ -1166,8 +1710,8 @@ class _ChatComponentState extends State<ChatComponent> {
             stream: _reactionsStream,
             builder: (context, reactionsSnap) {
               final reactions = reactionsSnap.data ?? const <Map<String, dynamic>>[];
-              final Map<String, Map<String, int>> countsByMessage = {};
-              final Set<String> myReactsKey = <String>{}; // "$messageId|$emoji"
+              final countsByMessage = <String, Map<String, int>>{};
+              final myReactsKey = <String>{}; // "$messageId|$emoji"
               for (final r in reactions) {
                 final mid = r['message_id'] as String?;
                 final emoji = r['emoji'] as String?;
@@ -1196,6 +1740,45 @@ class _ChatComponentState extends State<ChatComponent> {
                   final messageId = message['id'] as String?;
                   final parentId = message['parent_id'] as String?;
                   final editedAt = message['edited_at'];
+
+                  // Regra de edição: somente o autor pode editar e apenas até 15 minutos após o envio
+                  final createdAtRaw = message['created_at'];
+                  DateTime? createdAt;
+                  if (createdAtRaw is String) {
+                    createdAt = DateTime.tryParse(createdAtRaw);
+                  } else if (createdAtRaw is DateTime) {
+                    createdAt = createdAtRaw;
+                  }
+                  final createdAtUtc = createdAt?.toUtc();
+                  final nowUtc = DateTime.now().toUtc();
+                  final canEdit = isMine &&
+                      createdAtUtc != null &&
+                      nowUtc.difference(createdAtUtc).inMinutes < 15;
+
+                  // Medir largura da bolha para posicionar dinamicamente o menu
+                  final bubbleKey = GlobalKey();
+                  final isSelected =
+                      messageId != null && widget.selectedMessageId == messageId;
+                  if (messageId != null) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      final context = bubbleKey.currentContext;
+                      final size = context?.size;
+                      if (size != null) {
+                        final width = size.width;
+                        if (_bubbleWidthByMessageId[messageId] != width && mounted) {
+                          setState(() {
+                            _bubbleWidthByMessageId[messageId] = width;
+                          });
+                        }
+                      }
+                    });
+                  }
+                  const double menuSpacing = 8;
+                  final menuOffset = ((messageId != null
+                              ? _bubbleWidthByMessageId[messageId]
+                              : null) ??
+                          0) +
+                      menuSpacing;
 
                   final counts = messageId != null
                       ? (countsByMessage[messageId] ?? const <String, int>{})
@@ -1264,7 +1847,8 @@ class _ChatComponentState extends State<ChatComponent> {
                         }
                       },
                       onExit: (_) {
-                        if (_hoveredMessageId == messageId) {
+                        if (_activeMenuMessageId == null &&
+                            _hoveredMessageId == messageId) {
                           setState(() => _hoveredMessageId = null);
                         }
                       },
@@ -1274,14 +1858,28 @@ class _ChatComponentState extends State<ChatComponent> {
                           alignment: isMine
                               ? Alignment.centerRight
                               : Alignment.centerLeft,
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 260),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 96),
-                              child: Stack(
+                          child: Padding(
+                            padding: EdgeInsets.only(
+                              left: isMine ? 56 : 0,
+                              right: isMine ? 0 : 56,
+                            ),
+                            child: Stack(
                               clipBehavior: Clip.none,
                               children: [
-                              GestureDetector(
+                                Align(
+                                  alignment: isMine
+                                      ? Alignment.centerRight
+                                      : Alignment.centerLeft,
+                                  child: ConstrainedBox(
+                                    key: bubbleKey,
+                                    constraints:
+                                        const BoxConstraints(maxWidth: 260),
+                                    child: GestureDetector(
+                                onTap: () {
+                                  if (widget.onMessageTap != null) {
+                                    widget.onMessageTap!(message);
+                                  }
+                                },
                                 onLongPress: () {
                                   if (widget.onMessageLongPress != null) {
                                     widget.onMessageLongPress!(message);
@@ -1294,10 +1892,23 @@ class _ChatComponentState extends State<ChatComponent> {
                                         : scheme.surface,
                                     borderRadius: BorderRadius.circular(12),
                                     border: Border.all(
-                                      color: isMine
-                                          ? Colors.transparent
-                                          : scheme.outlineVariant,
+                                      color: isSelected
+                                          ? scheme.primary
+                                          : (isMine
+                                              ? Colors.transparent
+                                              : scheme.outlineVariant),
+                                      width: isSelected ? 2 : 1,
                                     ),
+                                    boxShadow: isSelected
+                                        ? [
+                                            BoxShadow(
+                                              color: scheme.primary
+                                                  .withOpacity(0.18),
+                                              blurRadius: 10,
+                                              offset: const Offset(0, 3),
+                                            ),
+                                          ]
+                                        : const [],
                                   ),
                                   child: Padding(
                                     padding: const EdgeInsets.all(10),
@@ -1315,7 +1926,7 @@ class _ChatComponentState extends State<ChatComponent> {
                                                 ?.copyWith(
                                                     fontWeight: FontWeight.w600),
                                           ),
-                                        if (replyPreview != null) replyPreview,
+                                        ?replyPreview,
                                         if (_isImageUrl(content))
                                           _MessageImage(
                                             url: content,
@@ -1437,71 +2048,94 @@ class _ChatComponentState extends State<ChatComponent> {
                                     ),
                                   ),
                                 ),
+                                ),
+                                ),
                               ),
-                               if (_hoveredMessageId == messageId)
+                               if (_hoveredMessageId == messageId ||
+                                   _activeMenuMessageId == messageId)
                                  Positioned(
                                    top: 0,
                                    bottom: 0,
-                                   left: isMine ? -20 : null,
-                                   right: isMine ? null : -20,
-                                  child: Center(
-                                    child: Container(
-                                      decoration: BoxDecoration(
-                                        color: scheme.surfaceContainerHighest
-                                            .withOpacity(0.6),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: PopupMenuButton<String>(
-                                        tooltip: 'Mais opções',
-                                        icon: const Icon(
-                                          Icons.more_vert,
-                                          size: 18,
-                                        ),
-                                        onSelected: (value) {
-                                          if (value == 'reply') {
-                                            widget.onReplyRequested?.call(message);
-                                          } else if (value == 'edit') {
-                                            widget.onEditRequested?.call(message);
-                                          } else if (value == 'react' &&
-                                              messageId != null) {
-                                            _showEmojiPicker(
-                                                context, messageId, roomId);
-                                          }
-                                        },
-                                        itemBuilder: (context) {
-                                          final entries =
-                                              <PopupMenuEntry<String>>[
-                                            const PopupMenuItem<String>(
-                                              value: 'reply',
-                                              child: Text('Responder'),
-                                            ),
-                                            const PopupMenuItem<String>(
-                                              value: 'react',
-                                              child: Text('Reagir'),
-                                            ),
-                                          ];
-                                          if (isMine) {
-                                            entries.insert(
-                                              1,
-                                              const PopupMenuItem<String>(
-                                                value: 'edit',
-                                                child: Text('Editar'),
-                                              ),
-                                            );
-                                          }
-                                          return entries;
-                                        },
-                                      ),
-                                    ),
-                                  ),
-                              ),
+                                   left: isMine ? null : menuOffset,
+                                   right: isMine ? menuOffset : null,
+                                   child: Center(
+                                     child: Container(
+                                       decoration: BoxDecoration(
+                                         color: scheme.surfaceContainerHighest
+                                             .withOpacity(0.6),
+                                         shape: BoxShape.circle,
+                                       ),
+                                       child: PopupMenuButton<String>(
+                                         tooltip: 'Mais opções',
+                                         icon: const Icon(
+                                           Icons.more_vert,
+                                           size: 18,
+                                         ),
+                                         onOpened: () {
+                                           if (_activeMenuMessageId != messageId) {
+                                             setState(() {
+                                               _activeMenuMessageId = messageId;
+                                             });
+                                           }
+                                         },
+                                         onCanceled: () {
+                                           if (_activeMenuMessageId != null) {
+                                             setState(() {
+                                               _activeMenuMessageId = null;
+                                               _hoveredMessageId = null;
+                                             });
+                                           }
+                                         },
+                                         onSelected: (value) {
+                                           if (value == 'reply') {
+                                             widget.onReplyRequested?.call(message);
+                                           } else if (value == 'edit') {
+                                             widget.onEditRequested?.call(message);
+                                           } else if (value == 'react' &&
+                                               messageId != null) {
+                                             _showEmojiPicker(
+                                                 context, messageId, roomId);
+                                           }
+                                           if (_activeMenuMessageId != null) {
+                                             setState(() {
+                                               _activeMenuMessageId = null;
+                                               _hoveredMessageId = null;
+                                             });
+                                           }
+                                         },
+                                         itemBuilder: (context) {
+                                           final entries =
+                                               <PopupMenuEntry<String>>[
+                                             const PopupMenuItem<String>(
+                                               value: 'reply',
+                                               child: Text('Responder'),
+                                             ),
+                                             const PopupMenuItem<String>(
+                                               value: 'react',
+                                               child: Text('Reagir'),
+                                             ),
+                                           ];
+                                           if (canEdit) {
+                                             entries.insert(
+                                               1,
+                                               const PopupMenuItem<String>(
+                                                 value: 'edit',
+                                                 child: Text('Editar'),
+                                               ),
+                                             );
+                                           }
+                                           return entries;
+                                         },
+                                       ),
+                                     ),
+                                   ),
+                                 ),
                             ],
                           ),
                             ),
                           ),
                         ),
                       ),
-                    ),
                   );
                 },
               );
@@ -1784,7 +2418,7 @@ class _TypingDotsState extends State<_TypingDots> {
 
   @override
   Widget build(BuildContext context) {
-    final base = 'Digitando';
+    const base = 'Digitando';
     final dots = '.' * _count;
     return Text('$base$dots');
   }
@@ -1900,6 +2534,7 @@ class InputComponent extends StatefulWidget {
     this.onCancelReply,
     this.onCancelEdit,
     this.onTypingChanged,
+    this.focusNode,
     super.key,
   });
 
@@ -1920,6 +2555,8 @@ class InputComponent extends StatefulWidget {
 
   /// Callback para notificar alterações de digitação (true = digitando)
   final ValueChanged<bool>? onTypingChanged;
+  /// Focus node externo para controlar foco do campo
+  final FocusNode? focusNode;
 
   @override
   State<InputComponent> createState() => _InputComponentState();
@@ -1936,6 +2573,7 @@ class _InsertNewLineIntent extends Intent {
 class _InputComponentState extends State<InputComponent> {
   bool _isSending = false;
   late final FocusNode _inputFocus;
+  bool _ownsFocusNode = false;
   final AttachmentService _attachmentService = AttachmentService();
   Timer? _typingDebounce;
   bool _isCurrentlyTyping = false;
@@ -1944,7 +2582,13 @@ class _InputComponentState extends State<InputComponent> {
   @override
   void initState() {
     super.initState();
-    _inputFocus = FocusNode();
+    if (widget.focusNode != null) {
+      _inputFocus = widget.focusNode!;
+      _ownsFocusNode = false;
+    } else {
+      _inputFocus = FocusNode();
+      _ownsFocusNode = true;
+    }
     widget.controller.addListener(_onTextChanged);
     _inputFocus.addListener(_onFocusChanged);
   }
@@ -1955,7 +2599,9 @@ class _InputComponentState extends State<InputComponent> {
     _typingPingTimer?.cancel();
     widget.controller.removeListener(_onTextChanged);
     _inputFocus.removeListener(_onFocusChanged);
-    _inputFocus.dispose();
+    if (_ownsFocusNode) {
+      _inputFocus.dispose();
+    }
     super.dispose();
   }
 
@@ -2025,11 +2671,11 @@ class _InputComponentState extends State<InputComponent> {
                 child: Shortcuts(
                   shortcuts: const <ShortcutActivator, Intent>{
                     SingleActivator(LogicalKeyboardKey.enter):
-                        const _SendMessageIntent(),
+                        _SendMessageIntent(),
                     SingleActivator(
                       LogicalKeyboardKey.enter,
                       shift: true,
-                    ): const _InsertNewLineIntent(),
+                    ): _InsertNewLineIntent(),
                   },
                   child: Actions(
                     actions: <Type, Action<Intent>>{
@@ -2240,6 +2886,19 @@ class _InputComponentState extends State<InputComponent> {
               ? widget.replyToMessage!['id']
               : null,
         });
+        // Dispara Edge Function para enviar notificação push
+        try {
+          await Supabase.instance.client.functions.invoke(
+            'send-notification', // nome da Edge Function no Supabase
+            body: {
+              'room_id': widget.roomId,
+              'from_user_id': currentUser.id,
+              'message_preview': content,
+            },
+          );
+        } catch (_) {
+          // Evita quebrar o fluxo de envio caso a função falhe
+        }
         widget.controller.clear();
         _setTyping(false);
         if (widget.replyToMessage != null) {
@@ -2247,8 +2906,18 @@ class _InputComponentState extends State<InputComponent> {
         }
       }
     } on PostgrestException catch (error) {
+      String userMessage;
+      final messageText = error.message;
+      if (widget.editMessage != null &&
+          (error.code == '42501' ||
+              messageText.toLowerCase().contains('row-level security'))) {
+        userMessage =
+            'Você só pode editar mensagens por até 15 minutos após o envio.';
+      } else {
+        userMessage = 'Erro ao enviar mensagem: ${error.message}';
+      }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erro ao enviar mensagem: ${error.message}')),
+        SnackBar(content: Text(userMessage)),
       );
     } catch (error) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2295,6 +2964,19 @@ class _InputComponentState extends State<InputComponent> {
             currentUser.email ??
             'Usuário',
       });
+      // Dispara Edge Function para enviar notificação push de anexo
+      try {
+        await Supabase.instance.client.functions.invoke(
+          'send-notification',
+          body: {
+            'room_id': widget.roomId,
+            'from_user_id': currentUser.id,
+            'message_preview': '📎 Novo anexo',
+          },
+        );
+      } catch (_) {
+        // Silencioso para não impactar UX de envio de anexo
+      }
     } on AttachmentServiceException catch (error) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(error.message)),
@@ -2321,6 +3003,7 @@ class _MobileChatScreen extends StatelessWidget {
   const _MobileChatScreen({
     required this.roomId,
     required this.textController,
+    required this.inputFocus,
     this.roomData,
     this.title,
   });
@@ -2329,6 +3012,7 @@ class _MobileChatScreen extends StatelessWidget {
   final String? title;
   final SidebarRoomData? roomData;
   final TextEditingController textController;
+  final FocusNode inputFocus;
 
   @override
   Widget build(BuildContext context) {
@@ -2341,6 +3025,7 @@ class _MobileChatScreen extends StatelessWidget {
       title: title,
       roomData: roomData,
       textController: textController,
+      inputFocus: inputFocus,
       themeController: themeController,
       isDarkMode: isDarkMode,
     );
@@ -2348,11 +3033,17 @@ class _MobileChatScreen extends StatelessWidget {
 }
 
 class _MobileAppBarTitle extends StatelessWidget {
-  const _MobileAppBarTitle({required this.title, this.roomData, this.subtitle});
+  const _MobileAppBarTitle({
+    required this.title,
+    this.roomData,
+    this.subtitle,
+    this.onAvatarTap,
+  });
 
   final String title;
   final SidebarRoomData? roomData;
   final Widget? subtitle;
+  final VoidCallback? onAvatarTap;
 
   @override
   Widget build(BuildContext context) {
@@ -2379,11 +3070,36 @@ class _MobileAppBarTitle extends StatelessWidget {
 
     Widget avatar;
     if (!data.isDirect) {
-      avatar = CircleAvatar(
-        radius: 14,
-        backgroundColor: scheme.secondaryContainer,
-        child: Icon(Icons.group_outlined, color: scheme.onSecondaryContainer, size: 18),
-      );
+      final url = data.avatarUrl?.trim();
+      if (url != null && url.isNotEmpty) {
+        avatar = CircleAvatar(
+          radius: 14,
+          backgroundColor: scheme.secondaryContainer,
+          child: ClipOval(
+            child: Image.network(
+              url,
+              width: 28,
+              height: 28,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Icon(
+                Icons.group_outlined,
+                color: scheme.onSecondaryContainer,
+                size: 18,
+              ),
+            ),
+          ),
+        );
+      } else {
+        avatar = CircleAvatar(
+          radius: 14,
+          backgroundColor: scheme.secondaryContainer,
+          child: Icon(
+            Icons.group_outlined,
+            color: scheme.onSecondaryContainer,
+            size: 18,
+          ),
+        );
+      }
     } else {
       final url = data.avatarUrl?.trim();
       if (url != null && url.isNotEmpty) {
@@ -2419,10 +3135,18 @@ class _MobileAppBarTitle extends StatelessWidget {
       overflow: TextOverflow.ellipsis,
     );
 
+    final avatarWithHandler = (!data.isDirect && onAvatarTap != null)
+        ? InkWell(
+            onTap: onAvatarTap,
+            customBorder: const CircleBorder(),
+            child: avatar,
+          )
+        : avatar;
+
     if (subtitle == null) {
       return Row(
         children: [
-          avatar,
+          avatarWithHandler,
           const SizedBox(width: 8),
           Expanded(child: titleWidget),
         ],
@@ -2431,7 +3155,7 @@ class _MobileAppBarTitle extends StatelessWidget {
 
     return Row(
       children: [
-        avatar,
+        avatarWithHandler,
         const SizedBox(width: 8),
         Expanded(
           child: Column(
@@ -2459,6 +3183,7 @@ class _MobileChatScaffold extends StatefulWidget {
     required this.textController,
     required this.themeController,
     required this.isDarkMode,
+    required this.inputFocus,
     this.roomData,
     this.title,
   });
@@ -2469,6 +3194,7 @@ class _MobileChatScaffold extends StatefulWidget {
   final TextEditingController textController;
   final ThemeController themeController;
   final bool isDarkMode;
+  final FocusNode inputFocus;
 
   @override
   State<_MobileChatScaffold> createState() => _MobileChatScaffoldState();
@@ -2547,7 +3273,7 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
           if (isTyping) {
             _typingTimer = Timer(const Duration(milliseconds: 1500), () {
               if (mounted) {
-                if (_peerTyping != false) {
+                if (_peerTyping) {
                   setState(() {
                     _peerTyping = false;
                   });
@@ -2621,8 +3347,14 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
     channel.subscribe((status, [ref]) async {
       if (status == RealtimeSubscribeStatus.subscribed) {
         final currentUserId = Supabase.instance.client.auth.currentUser?.id;
-        await channel.track({'user_id': currentUserId});
-        debugPrint('[presence][mobile][global] subscribed + tracked user_id=$currentUserId');
+        if (currentUserId != null) {
+          await channel.track({'user_id': currentUserId});
+          debugPrint(
+              '[presence][mobile][global] subscribed + tracked user_id=$currentUserId');
+        } else {
+          debugPrint(
+              '[presence][mobile][global] subscribed but no authenticated user to track');
+        }
         update();
       }
     });
@@ -2733,7 +3465,7 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
     final isDarkMode = widget.isDarkMode;
     final themeController = widget.themeController;
     Widget? subtitle;
-    if (widget.roomData?.isDirect == true) {
+    if (widget.roomData?.isDirect ?? false) {
       if (_peerTyping) {
         subtitle = const _TypingDots();
       } else {
@@ -2767,10 +3499,21 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
           title: widget.title ?? 'Conversa',
           roomData: widget.roomData,
           subtitle: subtitle,
+          onAvatarTap: (widget.roomData != null &&
+                  !(widget.roomData?.isDirect ?? true))
+              ? () {
+                  showGroupDetailsBottomSheet(
+                    context,
+                    roomId: widget.roomId,
+                    roomName: widget.title ?? widget.roomData!.title,
+                    avatarUrl: widget.roomData?.avatarUrl,
+                  );
+                }
+              : null,
         ),
         actions: [
           if (_selectedMessage != null) ...[
-            IconButton(
+          IconButton(
               tooltip: 'Responder',
               icon: const Icon(Icons.reply),
               onPressed: () {
@@ -2782,24 +3525,49 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
                 });
               },
             ),
-            if ((_selectedMessage!['from_id'] as String?) ==
-                Supabase.instance.client.auth.currentUser?.id)
-              IconButton(
-                tooltip: 'Editar',
-                icon: const Icon(Icons.edit_outlined),
-                onPressed: () {
-                  final m = _selectedMessage!;
-                  setState(() {
-                    _editingMessage = m;
-                    _replyTargetMessage = null;
-                    _selectedMessage = null;
-                    widget.textController.text =
-                        (m['content'] as String?) ?? '';
-                    widget.textController.selection =
-                        TextSelection.collapsed(
-                      offset: widget.textController.text.length,
-                    );
-                  });
+            if (_selectedMessage != null)
+              Builder(
+                builder: (context) {
+                  final currentUserId =
+                      Supabase.instance.client.auth.currentUser?.id;
+                  final isMine =
+                      (_selectedMessage!['from_id'] as String?) == currentUserId;
+
+                  final createdAtRaw = _selectedMessage!['created_at'];
+                  DateTime? createdAt;
+                  if (createdAtRaw is String) {
+                    createdAt = DateTime.tryParse(createdAtRaw);
+                  } else if (createdAtRaw is DateTime) {
+                    createdAt = createdAtRaw;
+                  }
+                  final createdAtUtc = createdAt?.toUtc();
+                  final nowUtc = DateTime.now().toUtc();
+                  final canEdit = isMine &&
+                      createdAtUtc != null &&
+                      nowUtc.difference(createdAtUtc).inMinutes < 15;
+
+                  if (!canEdit) {
+                    return const SizedBox.shrink();
+                  }
+
+                  return IconButton(
+                    tooltip: 'Editar',
+                    icon: const Icon(Icons.edit_outlined),
+                    onPressed: () {
+                      final m = _selectedMessage!;
+                      setState(() {
+                        _editingMessage = m;
+                        _replyTargetMessage = null;
+                        _selectedMessage = null;
+                        widget.textController.text =
+                            (m['content'] as String?) ?? '';
+                        widget.textController.selection =
+                            TextSelection.collapsed(
+                          offset: widget.textController.text.length,
+                        );
+                      });
+                    },
+                  );
                 },
               ),
             IconButton(
@@ -2838,11 +3606,14 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
           children: [
             ChatComponent(
               roomId: widget.roomId,
+              selectedMessageId:
+                  (_selectedMessage != null ? _selectedMessage!['id'] as String? : null),
               onReplyRequested: (message) {
                 setState(() {
                   _editingMessage = null;
                   _replyTargetMessage = message;
                 });
+                widget.inputFocus.requestFocus();
               },
               onEditRequested: (message) {
                 setState(() {
@@ -2854,6 +3625,17 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
                     offset: widget.textController.text.length,
                   );
                 });
+                widget.inputFocus.requestFocus();
+              },
+              onMessageTap: (message) {
+                final current = _selectedMessage;
+                if (current != null &&
+                    (current['id'] as String?) ==
+                        (message['id'] as String?)) {
+                  setState(() {
+                    _selectedMessage = null;
+                  });
+                }
               },
               onMessageLongPress: (message) {
                 setState(() {
@@ -2861,13 +3643,14 @@ class _MobileChatScaffoldState extends State<_MobileChatScaffold> {
                 });
               },
               showTypingIndicator:
-                  (widget.roomData?.isDirect == true) && _peerTyping,
+                  (widget.roomData?.isDirect ?? false) && _peerTyping,
             ),
             InputComponent(
               controller: widget.textController,
               roomId: widget.roomId,
               replyToMessage: _replyTargetMessage,
               editMessage: _editingMessage,
+              focusNode: widget.inputFocus,
               onCancelReply: () {
                 setState(() {
                   _replyTargetMessage = null;

@@ -1,10 +1,10 @@
-import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:zapizapi/services/password_recovery_service.dart';
-import 'package:zapizapi/utils/routes_enum.dart';
 import 'package:zapizapi/ui/widgets/custom_button.dart';
 import 'package:zapizapi/ui/widgets/custom_input.dart';
 import 'package:zapizapi/ui/widgets/custom_text_button.dart';
+import 'package:zapizapi/utils/routes_enum.dart';
 
 /// Tela para solicitar recuperação de senha
 class ForgotPasswordScreen extends StatefulWidget {

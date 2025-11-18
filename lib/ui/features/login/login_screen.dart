@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:zapizapi/services/notification_service.dart';
 import 'package:zapizapi/ui/widgets/custom_button.dart';
 import 'package:zapizapi/ui/widgets/custom_input.dart';
 import 'package:zapizapi/ui/widgets/custom_text_button.dart';
@@ -110,6 +111,12 @@ class _LoginScreenState extends State<LoginScreen> {
                               );
 
                               if (response.user != null) {
+                                // Sincroniza o token FCM com o Supabase
+                                await NotificationService.instance
+                                    .syncTokenWithSupabase(
+                                  userId: response.user!.id,
+                                );
+
                                 await navigator.pushReplacementNamed(
                                   RoutesEnum.home.route,
                                 );

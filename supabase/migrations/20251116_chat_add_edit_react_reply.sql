@@ -109,8 +109,14 @@ BEGIN
     CREATE POLICY "Update own messages content"
       ON public.messages
       FOR UPDATE
-      USING (from_id = auth.uid())
-      WITH CHECK (from_id = auth.uid());
+      USING (
+        from_id = auth.uid()
+        AND created_at >= now() - interval '15 minutes'
+      )
+      WITH CHECK (
+        from_id = auth.uid()
+        AND created_at >= now() - interval '15 minutes'
+      );
   END IF;
 END $$;
 
