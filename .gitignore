@@ -8,9 +8,7 @@ Thumbs.db
 *.orig
 
 # ---- Variáveis de ambiente ----
-.env
-.env.*
-*.env
+
 
 # ---- IDEs / Editores ----
 .idea/
